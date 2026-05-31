@@ -1,8 +1,18 @@
 Changelog
 =========
 
-Unreleased
-----------
+0.2.0
+-----
+- Install/upgrade story: README now documents running straight from GitHub via
+  `uvx` (with copy-paste `sx` aliases for zsh/bash/fish), installing as a tool,
+  upgrading, and uninstalling.
+- Update check: an installed, interactive `sx` checks GitHub at most once a day
+  for a newer release and prints a one-line notice (TUI shows a toast). Stdlib
+  only, cached, fast-timeout, fail-silent; opt out with `--no-update-check` or
+  `SX_NO_UPDATE_CHECK=1`. New `sx version` and `sx update [--run]` commands.
+
+0.1.0 (initial public release)
+------------------------------
 - Fix: orphan-cleanup screen `d` (delete selected) and `D` (delete all) did
   nothing — the key actions invoked async helpers without awaiting them, so the
   coroutines were discarded. They now run as Textual workers. The delete-all

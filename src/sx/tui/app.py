@@ -69,14 +69,20 @@ class SxApp(App):
         Binding("tab", "focus_next", "Switch pane", show=False),
     ]
 
-    def __init__(self) -> None:
-        """Initialize empty state; data is loaded on mount."""
+    def __init__(self, check_updates: bool = False) -> None:
+        """Initialize empty state; data is loaded on mount.
+
+        Args:
+            check_updates: If True, check GitHub for a newer release in the
+                background after mount and show a toast if one is available.
+        """
         super().__init__()
         self._adapters_by_name: dict = {}
         self._sessions_by_harness: dict[str, list[Session]] = {}
         self._delete_service: DeleteService | None = None
         self._group_mode = GroupMode.PROJECT
         self._filter = ""
+        self._check_updates = check_updates
 
     def compose(self) -> ComposeResult:
         """Build the static widget layout."""
@@ -101,6 +107,27 @@ class SxApp(App):
                 "e export · d delete · q quit[/dim]"
             )
         )
+        if self._check_updates:
+            self._run_update_check()
+
+    @work(thread=True)
+    def _run_update_check(self) -> None:
+        """Check GitHub for a newer release off-thread; toast if one exists."""
+        from sx.update import check_for_update
+
+        try:
+            info = check_for_update()
+        except Exception:  # noqa: BLE001 - update check must never break the app
+            return
+        if info is not None:
+            self.call_from_thread(
+                self.notify,
+                f"sx {info.latest} is available (you have {info.current}). "
+                f"Upgrade: {info.command}",
+                title="Update available",
+                severity="information",
+                timeout=10,
+            )
 
     # --- data ------------------------------------------------------------
 
@@ -435,11 +462,14 @@ class SxApp(App):
         self._populate_tree()
 
 
-def run_app() -> int:
+def run_app(check_updates: bool = False) -> int:
     """Launch the interactive TUI.
+
+    Args:
+        check_updates: If True, check GitHub for a newer release after launch.
 
     Returns:
         Process exit code (always ``0`` after a clean exit).
     """
-    SxApp().run()
+    SxApp(check_updates=check_updates).run()
     return 0
