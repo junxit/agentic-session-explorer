@@ -1,0 +1,39 @@
+[project]
+name = "sx"
+version = "0.1.0"
+description = "A terminal TUI to browse and delete AI coding-harness sessions (Claude Code, Codex, Gemini, and more)."
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [{ name = "junxit" }]
+keywords = ["tui", "claude-code", "codex", "gemini", "sessions", "terminal"]
+
+dependencies = [
+    "textual>=0.79",
+    "rich>=13.7",
+]
+
+[project.scripts]
+sx = "sx.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"

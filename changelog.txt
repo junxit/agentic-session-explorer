@@ -1,0 +1,32 @@
+Changelog
+=========
+
+Unreleased
+----------
+- Fix: orphan-cleanup screen `d` (delete selected) and `D` (delete all) did
+  nothing — the key actions invoked async helpers without awaiting them, so the
+  coroutines were discarded. They now run as Textual workers. The delete-all
+  count and typed-confirm phrase derive from the on-screen list (no re-scan
+  drift). Added pytest-asyncio TUI regression tests (tests/test_orphan_screen.py)
+  and a full keybinding audit across every view.
+- M5: pytest suite over synthetic fixtures (never touches real session data);
+  README keybindings/usage refreshed; packaging verified (uv build + run).
+- M4: permanent delete + Markdown export. ConfirmDeleteScreen previews exact
+  files/bytes (+ Claude cascade), offers export-first, flags ● LIVE sessions and
+  requires a typed phrase to delete them; bulk orphan delete needs "DELETE n".
+  DeleteService adds active-session detection, store-root allowlist enforcement,
+  and an append-only op-log (sx-deletions.log). Standalone `e` export action.
+  Orphan-cleanup screen (`o`). Markdown exporter (sx/export.py).
+- M3: grouping modes (project/date/recency, cycle with `m`), live title/project
+  filter (`/`), and Claude title cleanup (strips slash-command plumbing).
+- M2: interactive Textual TUI (`sx` / `sx tui`). Two panes — harness/project/session
+  tree (dormant harnesses greyed) and a scrollable transcript loaded lazily in a
+  background thread. Harness-agnostic Rich renderer (sx/render.py), markup-injection
+  safe. Verified headless via run_test(): 35 sessions, 608-msg/3.6MB transcript opens.
+- M1: read-only core + `sx list`/`sx harnesses` CLI. Verified on real files
+  (34 sessions: 21 Claude, 11 Codex, 2 Gemini), zero adapter load errors.
+- Adapters: Claude (in-file cwd, blocks, cascade), Codex (date-tree + session_meta),
+  Gemini (mutation-log replay), plus 7 dormant harnesses (greyed until installed).
+- Core: normalized Session/Message model, HarnessAdapter + JsonlFolderAdapter base,
+  registry with per-adapter failure isolation, path-allowlist + dry-run delete guard.
+- Scaffolded project: pyproject (uv/hatchling, sx entrypoint, py3.13+), .gitignore, README, package layout.
