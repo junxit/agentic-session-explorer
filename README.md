@@ -48,13 +48,76 @@ permanently removes the ones you no longer want.
 
 ✅ verified on a real machine · 🔎 format known · 🧩 needs probing once installed
 
-## Install
+## Run it
+
+You need [`uv`](https://docs.astral.sh/uv/). Pick one of the two ways below.
+
+### Option A — run straight from GitHub, no install (`uvx`)
+
+`uvx` fetches, builds, and runs `sx` in a throwaway environment — nothing is
+added to your PATH:
 
 ```bash
-uv tool install .
+uvx --from git+https://github.com/junxit/agentic-session-explorer.git sx
 ```
 
-This puts the `sx` command on your PATH.
+Typing that every time is a mouthful, so add an `sx` alias to your shell. The
+alias also sets `SX_NO_UPDATE_CHECK=1`, because `uvx` already pulls the latest
+build — the in-app "update available" prompt would be redundant here.
+
+**zsh** — append to `~/.zshrc`:
+
+```bash
+alias sx='SX_NO_UPDATE_CHECK=1 uvx --from git+https://github.com/junxit/agentic-session-explorer.git sx'
+```
+
+**bash** — append to `~/.bashrc` (Linux) or `~/.bash_profile` (macOS):
+
+```bash
+alias sx='SX_NO_UPDATE_CHECK=1 uvx --from git+https://github.com/junxit/agentic-session-explorer.git sx'
+```
+
+**fish** — append to `~/.config/fish/config.fish`:
+
+```fish
+alias sx 'env SX_NO_UPDATE_CHECK=1 uvx --from git+https://github.com/junxit/agentic-session-explorer.git sx'
+```
+
+Then reload (`source ~/.zshrc`, etc.) and run `sx`, `sx list`, `sx --version` —
+arguments pass straight through the alias.
+
+`uvx` caches builds, so a plain run may reuse a recent one. To force the newest
+commit, add `--refresh` to the alias's command, or pin a released tag with
+`...explorer.git@v0.2.0`.
+
+### Option B — install as a tool (recommended for regular use)
+
+This puts a persistent `sx` on your PATH:
+
+```bash
+uv tool install git+https://github.com/junxit/agentic-session-explorer.git
+```
+
+(From a local clone, `uv tool install .` works too.)
+
+**Upgrade:**
+
+```bash
+uv tool upgrade sx
+# or force the very latest commit on main:
+uv tool install --force git+https://github.com/junxit/agentic-session-explorer.git
+```
+
+**Uninstall:**
+
+```bash
+uv tool uninstall sx
+```
+
+When you run an installed `sx` interactively, it checks GitHub **at most once a
+day** for a newer release and prints a one-line notice (the TUI shows a toast).
+The check is cached, times out fast, fails silently, and never blocks startup.
+Turn it off with `--no-update-check` or by exporting `SX_NO_UPDATE_CHECK=1`.
 
 ## Usage
 
@@ -62,6 +125,8 @@ This puts the `sx` command on your PATH.
 sx              # launch the interactive TUI
 sx list         # list every discovered session as plain text
 sx harnesses    # show all known harnesses and their status
+sx version      # show the installed version and check for a newer one
+sx update       # show (or, with --run, execute) the upgrade command
 ```
 
 ### Keys (in the TUI)
@@ -111,6 +176,21 @@ uv sync --extra dev
 uv run sx list
 uv run pytest
 ```
+
+### Releasing
+
+The update check compares the installed version against the latest GitHub
+**release** (falling back to the highest `vX.Y.Z` tag). To publish an update:
+
+1. Bump `version` in `pyproject.toml` and `__version__` in `src/sx/__init__.py`.
+2. Commit, then tag and release:
+
+   ```bash
+   git tag v0.2.0 && git push --tags
+   gh release create v0.2.0 --generate-notes
+   ```
+
+Installed copies will then prompt their users to upgrade.
 
 ## Safety
 

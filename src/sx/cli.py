@@ -1,24 +1,49 @@
 """Command-line entry point for ``sx``.
 
-Milestone M1 ships read-only commands:
+Commands:
 
+* bare ``sx``      — launch the interactive TUI.
 * ``sx list``      — list discovered sessions, grouped by harness then project.
-* ``sx harnesses`` — show every known harness and its status (installed,
-  browsable, greyed/dormant).
+* ``sx harnesses`` — show every known harness and its status.
+* ``sx version``   — show the installed version and check GitHub for a newer one.
+* ``sx update``    — show (or run) the upgrade command when a newer release exists.
 
-The full TUI (``sx`` with no arguments) arrives in M2; until then a bare ``sx``
-runs ``list`` so the tool is useful immediately.
+When run interactively, ``sx`` checks GitHub at most once a day for a newer
+release and prints a one-line notice. Disable with ``--no-update-check`` or
+``SX_NO_UPDATE_CHECK=1``.
 """
 
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 
 from sx import __version__
+from sx import update as update_mod
 from sx.model import Capability, Session
 from sx.registry import build_registry
 from sx.util import human_size
+
+
+def _maybe_notify_update() -> None:
+    """Print a one-line upgrade notice to stderr when interactive.
+
+    Cheap and safe: skips entirely when stderr is not a TTY (so piped/scripted
+    output stays clean) or the check is opted out, and never raises.
+    """
+    if not sys.stderr.isatty() or update_mod.opted_out():
+        return
+    try:
+        info = update_mod.check_for_update()
+    except Exception:  # noqa: BLE001 - update check must never break the CLI
+        return
+    if info is not None:
+        print(
+            f"↑ sx {info.latest} is available (you have {info.current}). "
+            f"Upgrade: {info.command}",
+            file=sys.stderr,
+        )
 
 
 def _sort_key(session: Session) -> float:
@@ -109,6 +134,7 @@ def cmd_harnesses(args: argparse.Namespace) -> int:
     Returns:
         Process exit code.
     """
+    _maybe_notify_update()
     adapters, errors = build_registry()
     _print_load_errors(errors)
 
@@ -134,6 +160,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Browse and delete AI coding-harness sessions from the terminal.",
     )
     parser.add_argument("--version", action="version", version=f"sx {__version__}")
+    parser.add_argument(
+        "--no-update-check",
+        action="store_true",
+        help="Skip the once-a-day check for a newer release on GitHub.",
+    )
     sub = parser.add_subparsers(dest="command")
 
     p_list = sub.add_parser("list", help="List discovered sessions.")
@@ -149,6 +180,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_tui = sub.add_parser("tui", help="Launch the interactive TUI (default).")
     p_tui.set_defaults(func=cmd_tui)
 
+    p_version = sub.add_parser(
+        "version", help="Show the installed version and check for a newer one."
+    )
+    p_version.set_defaults(func=cmd_version)
+
+    p_update = sub.add_parser(
+        "update", help="Show (or run) the upgrade command if a newer release exists."
+    )
+    p_update.add_argument(
+        "--run", action="store_true", help="Run the upgrade command instead of printing it."
+    )
+    p_update.set_defaults(func=cmd_update)
+
     return parser
 
 
@@ -163,7 +207,58 @@ def cmd_tui(args: argparse.Namespace) -> int:
     """
     from sx.tui.app import run_app
 
-    return run_app()
+    return run_app(check_updates=not update_mod.opted_out())
+
+
+def cmd_version(args: argparse.Namespace) -> int:
+    """Handle ``sx version``: show installed version and the latest release.
+
+    Args:
+        args: Parsed CLI arguments (unused).
+
+    Returns:
+        Process exit code.
+    """
+    current = update_mod.current_version()
+    print(f"sx {current}")
+    if update_mod.opted_out():
+        print("(update check disabled via SX_NO_UPDATE_CHECK)")
+        return 0
+    latest = update_mod.fetch_latest_version()
+    if latest is None:
+        print("Latest release: unknown (no release published yet, or offline).")
+    elif update_mod.is_newer(latest, current):
+        print(f"Latest release: {latest} — upgrade with: {update_mod.UPGRADE_COMMAND}")
+    else:
+        print(f"Latest release: {latest} — you are up to date.")
+    return 0
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    """Handle ``sx update``: report or run the upgrade when one is available.
+
+    Args:
+        args: Parsed CLI arguments (uses ``args.run``).
+
+    Returns:
+        Process exit code.
+    """
+    info = update_mod.check_for_update(force=True)
+    if info is None:
+        print("sx is up to date (or the latest release could not be determined).")
+        return 0
+    print(f"sx {info.latest} is available (you have {info.current}).")
+    if not args.run:
+        print(f"Upgrade with: {info.command}")
+        print("Or re-run with --run to execute it now.")
+        return 0
+    print(f"Running: {info.command}")
+    try:
+        completed = subprocess.run(info.command.split(), check=False)
+    except OSError as exc:
+        print(f"Could not run upgrade: {exc}", file=sys.stderr)
+        return 1
+    return completed.returncode
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -177,6 +272,13 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # A global --no-update-check disables the check for this run (and any
+    # subprocess) by setting the same env var users can set permanently.
+    if getattr(args, "no_update_check", False):
+        import os
+
+        os.environ["SX_NO_UPDATE_CHECK"] = "1"
 
     # Bare `sx` launches the interactive TUI.
     if not getattr(args, "command", None):
