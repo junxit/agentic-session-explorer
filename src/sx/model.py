@@ -161,9 +161,12 @@ class DeleteResult:
         skipped: Mapping of path -> reason for anything intentionally not removed
             (e.g. blocked by a guard).
         dry_run: True if this was a preview and nothing was actually removed.
+        note: Optional human-readable detail about removals that are not files —
+            e.g. database rows. ``None`` for ordinary file-only deletes.
     """
 
     removed: list[Path] = field(default_factory=list)
     freed_bytes: int = 0
     skipped: dict[Path, str] = field(default_factory=dict)
     dry_run: bool = False
+    note: str | None = None

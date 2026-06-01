@@ -6,16 +6,18 @@ browsable, groupable, *deletable* view. Think of it as a terminal-native
 alternative to Claude Code UI, covering every harness at once.
 
 > **Status:** functional. Browsing, search, grouping, permanent deletion with
-> Markdown export, and orphan cleanup all work across Claude, Codex, and Gemini.
+> Markdown export, and orphan cleanup all work across Claude, Codex, Gemini, and
+> opencode.
 
 ## Why
 
 Each harness scatters sessions in its own format and location: Claude under
 `~/.claude/projects/<encoded-cwd>/`, Codex in a date tree under
-`~/.codex/sessions/`, Gemini as mutation logs under `~/.gemini/tmp/<hash>/`.
-Over time these pile up alongside orphaned folders pointing at projects you
-deleted long ago. `sx` reads them all, lets you scroll any transcript, and
-permanently removes the ones you no longer want.
+`~/.codex/sessions/`, Gemini as mutation logs under `~/.gemini/tmp/<hash>/`, and
+opencode as rows in a shared SQLite database. Over time these pile up alongside
+orphaned folders pointing at projects you deleted long ago. `sx` reads them all,
+lets you scroll any transcript, and permanently removes the ones you no longer
+want.
 
 ## Features
 
@@ -38,10 +40,10 @@ permanently removes the ones you no longer want.
 | Claude Code | ✅ verified | `~/.claude/projects/<encoded-cwd>/<id>.jsonl` |
 | Codex | ✅ verified | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` |
 | Gemini CLI | ✅ verified | `~/.gemini/tmp/<hash>/chats/session-*.jsonl` |
+| opencode | ✅ verified | `~/.local/share/opencode/opencode.db` (SQLite) |
 | Qwen Code | 🔎 dormant | Gemini-fork layout |
 | Continue | 🔎 dormant | `~/.continue/sessions/*.json` |
 | Goose | 🔎 dormant | `~/.local/share/goose/sessions/` |
-| opencode | 🔎 dormant | `~/.local/share/opencode/` |
 | Cline | 🧩 dormant | `~/.cline/data/workspaces/<id>/` |
 | Cursor | 🧩 dormant | `~/.cursor/` (SQLite) |
 | Crush | 🧩 dormant | SQLite |
@@ -160,6 +162,7 @@ flowchart TD
     JF --> CL["ClaudeAdapter"]
     JF --> CX["CodexAdapter"]
     JF --> GM["GeminiAdapter"]
+    BASE --> OC["OpencodeAdapter\n(SQLite, row-level delete)"]
     BASE --> DORM["dormant adapters\n(Cline, Cursor, Crush, ...)"]
     REG --> DEL["DeleteService\n(guards + op-log)"]
     REG --> EXP["MarkdownExporter"]
@@ -167,7 +170,11 @@ flowchart TD
 
 Every adapter normalizes its harness into the same `Session` and `Message`
 types, so the transcript viewer, the exporter, and the delete flow are each
-written once and work for all harnesses — present and future.
+written once and work for all harnesses — present and future. Most harnesses
+store one file per session; opencode keeps all sessions as rows in a shared
+SQLite database, so its adapter subclasses `HarnessAdapter` directly and deletes
+a session's rows (and its `session_diff` sidecar) without ever touching the
+database file or other sessions. Its shared `log/` files are left alone.
 
 ## Development
 

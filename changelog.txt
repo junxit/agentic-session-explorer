@@ -1,6 +1,18 @@
 Changelog
 =========
 
+0.3.0
+-----
+- opencode is now a fully-supported harness (browse + orphan-detect + delete).
+  Unlike the file-per-session harnesses, opencode stores every session as rows
+  in a shared SQLite database (~/.local/share/opencode/opencode.db). The new
+  OpencodeAdapter reads sessions read-only (WAL-safe) and deletes a session by
+  removing only its rows (session/message/part/todo/share) plus its
+  session_diff sidecar — never the database file, never another session, and
+  leaving the shared log/ files alone.
+- DeleteResult gains an additive `note` field so the op-log records non-file
+  removals (e.g. "deleted 8 db rows"); shown for opencode deletes.
+
 0.2.0
 -----
 - Install/upgrade story: README now documents running straight from GitHub via

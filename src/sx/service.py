@@ -157,6 +157,8 @@ class DeleteService:
             "freed_bytes": result.freed_bytes,
             "skipped": {str(k): v for k, v in result.skipped.items()},
         }
+        if result.note:
+            entry["note"] = result.note
         try:
             with self._log_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry) + "\n")

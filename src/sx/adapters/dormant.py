@@ -84,17 +84,6 @@ class GooseAdapter(DormantAdapter):
         return [home() / ".local" / "share" / "goose" / "sessions"]
 
 
-class OpencodeAdapter(DormantAdapter):
-    """opencode (SST). Stores session data on disk; parse support pending."""
-
-    name = "opencode"
-    display = "opencode"
-
-    def store_roots(self) -> list[Path]:
-        """Return opencode's canonical store locations."""
-        return [home() / ".local" / "share" / "opencode", home() / ".opencode"]
-
-
 class ClineAdapter(DormantAdapter):
     """Cline (VS Code extension). Per-workspace state dirs; parse pending."""
 
@@ -132,7 +121,6 @@ DORMANT_ADAPTERS = [
     QwenAdapter,
     ContinueAdapter,
     GooseAdapter,
-    OpencodeAdapter,
     ClineAdapter,
     CursorAdapter,
     CrushAdapter,
