@@ -27,22 +27,20 @@ ACTIVE_WINDOW_SECONDS = 90
 
 
 def default_log_path() -> Path:
-    """Return the op-log path, honouring ``SX_LOG_FILE`` then ``XDG_STATE_HOME``.
+    """Return the op-log path: ``./sx-deletions.log``, or ``SX_LOG_FILE``.
 
-    The log lives in one fixed location rather than the current directory. A
-    cwd-relative audit trail fragments across every directory ``sx`` is run from
-    — so the record of an irreversible deletion may not be where the user looks
-    — and drops a file containing chat-derived titles into unrelated projects.
+    The log is written beside the working directory so it stays visible next to
+    the work it describes. Note that it is therefore per-directory: running
+    ``sx`` from several places produces several logs. Set ``SX_LOG_FILE`` to
+    collect every deletion in one file instead.
 
     Returns:
-        The absolute op-log path.
+        The op-log path.
     """
     override = os.environ.get("SX_LOG_FILE")
     if override:
         return Path(override).expanduser()
-    state = os.environ.get("XDG_STATE_HOME")
-    base = Path(state).expanduser() if state else Path.home() / ".local" / "state"
-    return base / "sx" / "sx-deletions.log"
+    return Path.cwd() / "sx-deletions.log"
 
 
 def _no_adapter(harness: str, *, dry_run: bool) -> DeleteResult:

@@ -353,6 +353,61 @@ def test_exported_markdown_contains_no_escapes(tmp_path: Path):
     assert "\x1b" not in md
 
 
+# --- op-log location -------------------------------------------------------
+
+def test_op_log_defaults_to_the_working_directory(tmp_path: Path, monkeypatch):
+    """The op-log sits beside the work it describes, never under ~/.local."""
+    from sx.service import default_log_path
+
+    monkeypatch.delenv("SX_LOG_FILE", raising=False)
+    monkeypatch.chdir(tmp_path)
+    path = default_log_path()
+    assert path == tmp_path / "sx-deletions.log"
+    assert ".local" not in str(path)
+
+
+def test_op_log_honours_an_explicit_override(tmp_path: Path, monkeypatch):
+    """``SX_LOG_FILE`` collects deletions from every directory into one file."""
+    from sx.service import default_log_path
+
+    target = tmp_path / "central" / "all-deletions.log"
+    monkeypatch.setenv("SX_LOG_FILE", str(target))
+    assert default_log_path() == target
+
+
+def test_op_log_is_owner_only_and_records_the_deletion(tmp_path: Path):
+    """The log is written 0600 — it holds chat-derived titles and paths."""
+    import stat
+
+    root = tmp_path / "store"
+    root.mkdir()
+    victim = root / "gone.jsonl"
+    victim.write_text("{}", encoding="utf-8")
+    log = tmp_path / "sx-deletions.log"
+
+    class _A(HarnessAdapter):
+        name = "t"
+        display = "T"
+        capabilities = Capability.BROWSE | Capability.DELETE
+
+        def store_roots(self):
+            return [root]
+
+        def discover(self):
+            return iter(())
+
+        def load(self, session):
+            return []
+
+    service = DeleteService({"t": _A()}, log_path=log)
+    service.delete(Session(harness="t", session_id="s1", title="x", paths=[victim]))
+
+    assert log.exists()
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+    assert service.last_log_error is None
+    assert json.loads(log.read_text(encoding="utf-8").splitlines()[-1])["id"] == "s1"
+
+
 # --- update cache ----------------------------------------------------------
 
 @pytest.mark.parametrize("payload", ["[]", "null", '"a string"', "42"])

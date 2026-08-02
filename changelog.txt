@@ -1,6 +1,13 @@
 Changelog
 =========
 
+0.4.1
+-----
+- The deletion op-log is written to ./sx-deletions.log again, next to the work
+  it describes, rather than under ~/.local/state. It remains owner-only and
+  write failures are still surfaced. Set SX_LOG_FILE to collect deletions from
+  every directory into a single log.
+
 0.4.0
 -----
 Safety, correctness and hardening pass. The theme: sx must never claim to have

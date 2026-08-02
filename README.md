@@ -149,8 +149,8 @@ sx update       # show (or, with --run, execute) the upgrade command
 A session written within the last 90 seconds is flagged `● LIVE`; deleting one
 requires typing `DELETE` to confirm. Bulk orphan deletion requires typing
 `DELETE <n>`. Exports default to `./session-exports/` and never overwrite an
-existing file. Every deletion is appended to
-`~/.local/state/sx/sx-deletions.log` (override with `SX_LOG_FILE`).
+existing file. Every deletion is appended to `./sx-deletions.log` (set
+`SX_LOG_FILE` to keep one log across directories).
 
 ## Architecture
 
@@ -222,9 +222,9 @@ that the confirmation you see is the whole truth about what is about to go:
   "export before deleting" cannot destroy the archive it just made.
 - **Untrusted transcript text can't drive your terminal.** Control sequences are
   replaced with visible glyphs (`␛`, `␇`) in both the TUI and exported Markdown.
-- **Every deletion is logged** to `~/.local/state/sx/sx-deletions.log` (owner-only;
-  override with `SX_LOG_FILE`), and a logging failure is surfaced rather than
-  swallowed.
+- **Every deletion is logged** to `./sx-deletions.log` (owner-only), and a
+  logging failure is surfaced rather than swallowed. The log is per-directory;
+  set `SX_LOG_FILE` to collect every deletion in one place.
 
 Sessions whose project lives on an unmounted volume are treated as *unavailable*,
 not deleted, so unplugging a drive never turns real transcripts into cleanup
