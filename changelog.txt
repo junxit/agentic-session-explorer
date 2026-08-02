@@ -1,6 +1,68 @@
 Changelog
 =========
 
+0.4.0
+-----
+Safety, correctness and hardening pass. The theme: sx must never claim to have
+done something it did not do, nor destroy more than its confirmation disclosed.
+
+Deletion now tells the truth
+- Delete previews and notifications report database-row removals (DeleteResult
+  .note), which were previously invisible: an opencode session without a sidecar
+  previewed as "Nothing to remove · 0 B" and then destroyed the whole
+  conversation.
+- Refused deletions are no longer reported as successes. The orphan row stays,
+  the message is an error, and partial results are stated honestly. Previously a
+  fully-refused bulk cleanup showed "Deleted all orphans · freed 0 B".
+- Gemini's stray temp files are actually deletable: find_orphans reported paths
+  outside the adapter's own store roots, so the guard refused all of them.
+- Bulk orphan confirmation dry-runs each target instead of summing reported
+  sizes, so the promised total matches what the guard will allow.
+
+Deletion no longer destroys more than it discloses
+- Confirmations enumerate what a folder contains (files, nested transcripts,
+  memory files) before it is recursively removed.
+- "Empty" project folders now state what remains instead of claiming to hold
+  nothing while containing scripts, tool output or nested transcripts.
+- Cascade deletion matches session ids exactly (UUID-shaped) rather than by
+  substring; a session file named "a.jsonl" previously swept every ~/.claude
+  state entry containing the letter "a".
+- Markdown export never overwrites: colliding names get a suffix, so
+  export-before-delete cannot destroy the archive it just wrote.
+- A project on an unmounted volume is "unavailable", not a dead-project orphan.
+- A folder's status is judged from all its sessions, and the lossy folder-name
+  decode is no longer trusted to declare a project dead.
+- opencode deletes database rows first and unlinks the sidecar only on success,
+  removing three partial-delete paths.
+- The live-session guard asks the adapter for its own activity signal (opencode
+  uses the database column), and treats "unknown" as live.
+
+Hardening
+- Terminal control sequences in transcripts are replaced with visible glyphs in
+  the TUI and in exports, so hostile chat content cannot retitle a window, write
+  the clipboard, or clear the screen when viewed.
+- Orphan table cells are Text objects: reasons embed untrusted paths, which
+  Textual would otherwise parse as markup (and malformed markup wedged the
+  screen).
+- opencode session ids are validated before being used to build a file path.
+- The delete guard refuses a store root itself.
+- The op-log moved to ~/.local/state/sx/ (SX_LOG_FILE overrides), is owner-only,
+  and write failures are surfaced instead of silently swallowed.
+
+Robustness and performance
+- `sx update` no longer crashes on a corrupt (non-dict) cache file; failed
+  version lookups are cached so the daily throttle works; responses are bounded;
+  `sx list` shows the update notice too.
+- Gemini discovery no longer replays entire chat files to count messages.
+- Liveness badges are briefly cached, so filtering does not stat every session
+  on each keystroke.
+- Runtime guards replaced asserts (stripped under `python -O`) and unguarded
+  adapter lookups that could tear down the app mid-deletion.
+- 21 new regression tests, including the previously impossible case of an
+  adapter that refuses its own reported orphans, plus a cross-adapter invariant
+  that every orphan path is deletable by its own guard. Tests no longer read the
+  developer's real session stores.
+
 0.3.0
 -----
 - opencode is now a fully-supported harness (browse + orphan-detect + delete).

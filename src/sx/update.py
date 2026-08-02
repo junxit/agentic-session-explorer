@@ -109,6 +109,10 @@ def is_newer(latest: str, current: str) -> bool:
     return lp > cp
 
 
+#: Upper bound on an update-check response body (GitHub's is a few KB).
+_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+
+
 def _cache_file() -> Path:
     """Return the on-disk cache path (honours ``XDG_CACHE_HOME``)."""
     base = os.environ.get("XDG_CACHE_HOME")
@@ -117,11 +121,18 @@ def _cache_file() -> Path:
 
 
 def _read_cache() -> dict | None:
-    """Return the cached check result, or ``None`` if absent/unreadable."""
+    """Return the cached check result, or ``None`` if absent/unusable.
+
+    A cache file holding valid JSON that is not an object (``[]``, ``null``, a
+    bare string) must be rejected here, not merely parsed: callers go straight to
+    ``cache.get(...)``, so returning a list would raise ``AttributeError`` and
+    crash ``sx update``.
+    """
     try:
-        return json.loads(_cache_file().read_text(encoding="utf-8"))
+        data = json.loads(_cache_file().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    return data if isinstance(data, dict) else None
 
 
 def _write_cache(latest: str | None) -> None:
@@ -174,7 +185,12 @@ def _get_json(url: str, timeout: float):
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            # Bounded read: the socket timeout limits each read, not the total
+            # transfer, so an oversized body could otherwise exhaust memory.
+            body = response.read(_MAX_RESPONSE_BYTES + 1)
+            if len(body) > _MAX_RESPONSE_BYTES:
+                return None
+            return json.loads(body.decode("utf-8"))
     except Exception:  # noqa: BLE001 - network/parse errors are non-fatal
         return None
 
@@ -245,8 +261,13 @@ def check_for_update(*, force: bool = False, timeout: float | None = None) -> Up
         latest = fetch_latest_version(timeout)
         if latest is not None:
             _write_cache(latest)
-        elif cache is not None:
-            latest = cache.get("latest")  # fall back to stale value when offline
+        else:
+            # Record the miss too. Without this the throttle never engages when
+            # a project has no published release, so every single run would hit
+            # the API twice and stall on a slow network.
+            _write_cache(None)
+            if cache is not None:
+                latest = cache.get("latest")  # stale value beats nothing offline
 
     if not latest:
         return None

@@ -15,6 +15,7 @@ layers the cross-cutting concerns on top:
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -26,8 +27,35 @@ ACTIVE_WINDOW_SECONDS = 90
 
 
 def default_log_path() -> Path:
-    """Return the default op-log path (``./sx-deletions.log``)."""
-    return Path.cwd() / "sx-deletions.log"
+    """Return the op-log path, honouring ``SX_LOG_FILE`` then ``XDG_STATE_HOME``.
+
+    The log lives in one fixed location rather than the current directory. A
+    cwd-relative audit trail fragments across every directory ``sx`` is run from
+    — so the record of an irreversible deletion may not be where the user looks
+    — and drops a file containing chat-derived titles into unrelated projects.
+
+    Returns:
+        The absolute op-log path.
+    """
+    override = os.environ.get("SX_LOG_FILE")
+    if override:
+        return Path(override).expanduser()
+    state = os.environ.get("XDG_STATE_HOME")
+    base = Path(state).expanduser() if state else Path.home() / ".local" / "state"
+    return base / "sx" / "sx-deletions.log"
+
+
+def _no_adapter(harness: str, *, dry_run: bool) -> DeleteResult:
+    """Return a refusing result for a harness with no registered adapter.
+
+    Returned instead of raising ``KeyError``: these calls run inside Textual
+    workers, where an unhandled exception tears down the whole app — possibly
+    part-way through a batch of deletions.
+    """
+    return DeleteResult(
+        dry_run=dry_run,
+        skipped={Path(f"<{harness}>"): "no adapter registered (refused)"},
+    )
 
 
 class DeleteService:
@@ -43,14 +71,24 @@ class DeleteService:
         """Store adapters and resolve the op-log location."""
         self._adapters = adapters_by_name
         self._log_path = log_path or default_log_path()
+        #: Set when the last op-log write failed, so the UI can surface it.
+        self.last_log_error: str | None = None
 
     # --- active-session detection ---------------------------------------
 
     def is_active(self, session: Session, *, window: int = ACTIVE_WINDOW_SECONDS) -> bool:
-        """Return True if the session's file changed within ``window`` seconds.
+        """Return True if the session was written within ``window`` seconds.
 
-        The primary file is re-``stat``-ed at call time (not the cached mtime
-        from discovery) so the check reflects the moment of deletion.
+        Liveness is asked of the owning adapter
+        (:meth:`~sx.adapters.base.HarnessAdapter.last_activity`) and recomputed at
+        call time, so the answer reflects the moment of deletion. File-backed
+        harnesses re-``stat`` their transcript; database-backed ones consult the
+        row that actually tracks conversation activity.
+
+        When liveness cannot be determined the session is treated as **active**.
+        That is the fail-safe direction: the cost of a wrong "live" is one extra
+        typed confirmation, while a wrong "not live" removes the only guard
+        standing between a keystroke and a conversation being written right now.
 
         Args:
             session: The session to test.
@@ -59,14 +97,16 @@ class DeleteService:
         Returns:
             True if the session appears to be in active use.
         """
-        path = session.primary_path
-        if path is None:
-            return False
+        adapter = self._adapters.get(session.harness)
+        if adapter is None:
+            return True
         try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            return False
-        return (time.time() - mtime) <= window
+            last = adapter.last_activity(session)
+        except Exception:  # noqa: BLE001 - a broken probe must not disable the guard
+            return True
+        if last is None:
+            return True
+        return (time.time() - last.timestamp()) <= window
 
     # --- sessions --------------------------------------------------------
 
@@ -79,7 +119,9 @@ class DeleteService:
         Returns:
             A dry-run result listing every path that would be removed.
         """
-        adapter = self._adapters[session.harness]
+        adapter = self._adapters.get(session.harness)
+        if adapter is None:
+            return _no_adapter(session.harness, dry_run=True)
         return adapter.delete(session, dry_run=True)
 
     def delete(self, session: Session) -> DeleteResult:
@@ -91,7 +133,9 @@ class DeleteService:
         Returns:
             The :class:`DeleteResult` describing what was removed.
         """
-        adapter = self._adapters[session.harness]
+        adapter = self._adapters.get(session.harness)
+        if adapter is None:
+            return _no_adapter(session.harness, dry_run=False)
         result = adapter.delete(session, dry_run=False)
         self._log(
             action="delete_session",
@@ -106,12 +150,16 @@ class DeleteService:
 
     def preview_orphan(self, orphan: Orphan) -> DeleteResult:
         """Return a dry-run :class:`DeleteResult` for an orphan."""
-        adapter = self._adapters[orphan.harness]
+        adapter = self._adapters.get(orphan.harness)
+        if adapter is None:
+            return _no_adapter(orphan.harness, dry_run=True)
         return adapter.delete_orphan(orphan, dry_run=True)
 
     def delete_orphan(self, orphan: Orphan) -> DeleteResult:
         """Permanently delete an orphan and record it in the op-log."""
-        adapter = self._adapters[orphan.harness]
+        adapter = self._adapters.get(orphan.harness)
+        if adapter is None:
+            return _no_adapter(orphan.harness, dry_run=False)
         result = adapter.delete_orphan(orphan, dry_run=False)
         self._log(
             action="delete_orphan",
@@ -160,7 +208,20 @@ class DeleteService:
         if result.note:
             entry["note"] = result.note
         try:
+            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+            existed = self._log_path.exists()
             with self._log_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry) + "\n")
-        except OSError:
-            pass
+            if not existed:
+                # The log records chat-derived titles and absolute project
+                # paths; keep it owner-only rather than world-readable.
+                try:
+                    self._log_path.chmod(0o600)
+                except OSError:
+                    pass
+            self.last_log_error = None
+        except OSError as exc:
+            # Never abort the caller over an audit-trail problem, but do not
+            # hide it either: a silent failure means deletions happen with no
+            # record at all.
+            self.last_log_error = f"could not write {self._log_path}: {exc}"

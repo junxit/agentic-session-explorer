@@ -15,6 +15,7 @@ from __future__ import annotations
 import shutil
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from datetime import datetime
 from pathlib import Path
 
 from sx.model import (
@@ -29,8 +30,17 @@ from sx.util import (
     file_mtime,
     is_within,
     iter_jsonl,
+    mount_unavailable,
     read_first_line,
 )
+
+
+def _same_path(a: Path, b: Path) -> bool:
+    """Return True if two paths resolve to the same location."""
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
 
 
 class HarnessAdapter(ABC):
@@ -82,6 +92,26 @@ class HarnessAdapter(ABC):
         """Return extra paths tied to ``session`` (cascade delete). Default: none."""
         return []
 
+    def last_activity(self, session: Session) -> datetime | None:
+        """Return when this session was last written, for the live-delete guard.
+
+        The default reads the primary transcript's mtime, which is correct for
+        file-per-session harnesses. Adapters whose content does not live in that
+        file (a shared database, for instance) must override this — otherwise the
+        guard silently never engages for them.
+
+        Args:
+            session: The session to probe.
+
+        Returns:
+            The last-write time, or ``None`` if it cannot be determined (the
+            caller treats unknown as active).
+        """
+        path = session.primary_path
+        if path is None:
+            return None
+        return file_mtime(path)
+
     def delete(self, session: Session, *, dry_run: bool = False) -> DeleteResult:
         """Permanently delete a session's files (and correlated paths).
 
@@ -125,6 +155,11 @@ class HarnessAdapter(ABC):
                 continue
             if not is_within(path, roots):
                 result.skipped[path] = "outside store root (refused)"
+                continue
+            if any(_same_path(path, root) for root in roots):
+                # A store root is "within itself", so the guard above would let
+                # it through and rmtree the entire harness store.
+                result.skipped[path] = "target is a store root (refused)"
                 continue
             size = dir_size(path)
             if dry_run:
@@ -199,7 +234,11 @@ class JsonlFolderAdapter(HarnessAdapter):
             modified=file_mtime(path),
             size_bytes=size,
             paths=[path],
-            is_orphan=bool(project) and not Path(project).exists(),
+            is_orphan=(
+                bool(project)
+                and not Path(project).exists()
+                and not mount_unavailable(project)
+            ),
         )
         return session
 

@@ -19,7 +19,9 @@ store-root allowlist (in the adapter), and the append-only op-log.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime
+from pathlib import Path
 
 from rich.text import Text
 
@@ -37,10 +39,41 @@ from sx.registry import build_registry
 from sx.render import messages_to_text
 from sx.service import DeleteService
 from sx.tui.screens import ConfirmDeleteScreen, OrphanScreen
-from sx.util import human_size
+from sx.util import human_size, sanitize_text
 
 _READY_STYLE = "bold green"
 _DORMANT_STYLE = "dim"
+
+
+def _contents_summary(path: Path) -> str:
+    """Describe what a directory target actually holds, for delete previews.
+
+    Deleting an orphaned folder is recursive, so the confirmation must say what
+    is inside it — transcripts and memory files in particular are easy to destroy
+    unknowingly when a folder is labelled merely "orphan".
+
+    Args:
+        path: The target about to be deleted.
+
+    Returns:
+        An indented one-line description, or ``""`` for non-directories.
+    """
+    if not path.is_dir():
+        return ""
+    try:
+        files = [p for p in path.rglob("*") if p.is_file()]
+    except OSError:
+        return ""
+    if not files:
+        return "      (empty directory)\n"
+    transcripts = [p for p in files if p.suffix == ".jsonl"]
+    memory = [p for p in files if p.suffix == ".md" and "memory" in p.parts]
+    bits = [f"{len(files)} file(s)"]
+    if transcripts:
+        bits.append(f"{len(transcripts)} transcript(s)")
+    if memory:
+        bits.append(f"{len(memory)} MEMORY file(s)")
+    return "      contains " + ", ".join(bits) + "\n"
 
 
 class SxApp(App):
@@ -82,6 +115,11 @@ class SxApp(App):
         self._delete_service: DeleteService | None = None
         self._group_mode = GroupMode.PROJECT
         self._filter = ""
+        #: Short-lived cache of liveness badges, keyed by (harness, session id).
+        #: The tree is rebuilt on every filter keystroke and each label otherwise
+        #: costs a fresh stat/DB query per visible session. The badge is
+        #: advisory; the authoritative check runs again, uncached, at delete time.
+        self._live_cache: dict[tuple[str, str], tuple[float, bool]] = {}
         self._check_updates = check_updates
 
     def compose(self) -> ComposeResult:
@@ -120,9 +158,11 @@ class SxApp(App):
         except Exception:  # noqa: BLE001 - update check must never break the app
             return
         if info is not None:
+            # `latest` is a remote-supplied tag name and notify() parses markup.
+            latest = sanitize_text(str(info.latest)).replace("[", r"\[")
             self.call_from_thread(
                 self.notify,
-                f"sx {info.latest} is available (you have {info.current}). "
+                f"sx {latest} is available (you have {info.current}). "
                 f"Upgrade: {info.command}",
                 title="Update available",
                 severity="information",
@@ -206,11 +246,34 @@ class SxApp(App):
             for session in group_sessions_list:
                 group_node.add_leaf(self._session_label(session), data=session)
 
+    def _is_live_cached(self, session: Session, ttl: float = 2.0) -> bool:
+        """Return the liveness badge for a session, cached briefly.
+
+        Args:
+            session: The session to check.
+            ttl: Seconds a cached answer stays valid.
+
+        Returns:
+            True if the session appears to be in active use.
+        """
+        if self._delete_service is None:
+            return False
+        key = (session.harness, session.session_id)
+        now = time.monotonic()
+        cached = self._live_cache.get(key)
+        if cached is not None and (now - cached[0]) < ttl:
+            return cached[1]
+        live = self._delete_service.is_active(session)
+        self._live_cache[key] = (now, live)
+        return live
+
     def _session_label(self, session: Session) -> Text:
         """Render a session leaf label (live badge, date, size, title)."""
-        live = self._delete_service is not None and self._delete_service.is_active(session)
+        live = self._is_live_cached(session)
         date = session.modified.strftime("%Y-%m-%d") if session.modified else "          "
-        title = (session.title or session.session_id).replace("\n", " ").strip()
+        title = sanitize_text(
+            (session.title or session.session_id).replace("\n", " ").strip()
+        )
         label = Text()
         if live:
             label.append("● ", style="bold red")
@@ -324,7 +387,10 @@ class SxApp(App):
         if session is None:
             self.notify("No session selected.", severity="warning")
             return
-        adapter = self._adapters_by_name[session.harness]
+        adapter = self._adapters_by_name.get(session.harness)
+        if adapter is None:
+            self.notify(f"No adapter for {session.harness!r}.", severity="error")
+            return
         try:
             path = await asyncio.to_thread(export_session, adapter, session)
         except Exception as exc:  # noqa: BLE001
@@ -335,21 +401,39 @@ class SxApp(App):
     # --- delete ----------------------------------------------------------
 
     def _session_preview_text(self, session: Session) -> Text:
-        """Render the delete preview for a session (paths + total size)."""
-        assert self._delete_service is not None
-        result = self._delete_service.preview(session)
+        """Render the delete preview for a session.
+
+        Shows the files that will go, any non-file work (database rows, via
+        ``note``), and anything the guard will refuse — so the preview can never
+        understate what a confirmation is about to destroy.
+        """
+        service = self._delete_service
+        if service is None:
+            return Text("Delete service unavailable.", style="red")
+        result = service.preview(session)
         text = Text()
         text.append(f"{session.title}\n", style="bold")
         text.append(f"{session.harness} · {session.project_path or '(unknown)'}\n\n", style="dim")
-        if not result.removed:
-            text.append("Nothing to remove.\n", style="yellow")
+
         for path in result.removed:
             text.append(f"  • {path}\n")
-        text.append(f"\nTotal: {len(result.removed)} path(s), "
-                    f"{human_size(result.freed_bytes)}", style="bold")
+        if result.note:
+            text.append(f"  • {result.note}\n", style="bold yellow")
+        if not result.removed and not result.note:
+            text.append("Nothing to remove.\n", style="yellow")
+
+        text.append(
+            f"\nTotal: {len(result.removed)} path(s), {human_size(result.freed_bytes)}",
+            style="bold",
+        )
         cascade = len(result.removed) - 1
         if cascade > 0:
             text.append(f"  (includes {cascade} correlated file(s))", style="dim")
+
+        if result.refused:
+            text.append(f"\n\n{len(result.refused)} target(s) will be refused:\n", style="red")
+            for path, reason in list(result.refused.items())[:5]:
+                text.append(f"  ✗ {path} — {reason}\n", style="red")
         return text
 
     @work
@@ -359,7 +443,9 @@ class SxApp(App):
         if session is None:
             self.notify("No session selected.", severity="warning")
             return
-        assert self._delete_service is not None
+        if self._delete_service is None:
+            self.notify("Delete service unavailable.", severity="error")
+            return
         is_live = self._delete_service.is_active(session)
         preview = self._session_preview_text(session)
         screen = ConfirmDeleteScreen(
@@ -372,7 +458,10 @@ class SxApp(App):
         result = await self.push_screen_wait(screen)
         if result is None:
             return
-        adapter = self._adapters_by_name[session.harness]
+        adapter = self._adapters_by_name.get(session.harness)
+        if adapter is None:
+            self.notify(f"No adapter for {session.harness!r}.", severity="error")
+            return
         if result.get("export"):
             try:
                 path = await asyncio.to_thread(export_session, adapter, session)
@@ -381,9 +470,21 @@ class SxApp(App):
                 self.notify(f"Export failed, aborting delete: {exc!r}", severity="error")
                 return
         outcome = self._delete_service.delete(session)
-        self.notify(
-            f"Deleted {len(outcome.removed)} path(s) · freed {human_size(outcome.freed_bytes)}"
-        )
+        if outcome.failed:
+            reason = next(iter(outcome.refused.values()), "unknown reason")
+            self.notify(
+                f"Nothing was deleted — {outcome.summary()} ({reason})",
+                severity="error",
+                timeout=10,
+            )
+        else:
+            self.notify(f"Deleted: {outcome.summary()}")
+        if self._delete_service.last_log_error:
+            self.notify(
+                f"Deletion happened but was NOT logged — {self._delete_service.last_log_error}",
+                severity="warning",
+                timeout=10,
+            )
         self._reload_data()
         self._populate_tree()
 
@@ -414,8 +515,7 @@ class SxApp(App):
         Returns:
             True if the user confirmed, False if they cancelled.
         """
-        assert self._delete_service is not None
-        if not orphans:
+        if self._delete_service is None or not orphans:
             return False
 
         if len(orphans) == 1:
@@ -426,16 +526,41 @@ class SxApp(App):
             preview.append(f"{orphan.harness} · {orphan.kind.value}\n\n", style="dim")
             for path in result.removed:
                 preview.append(f"  • {path}\n")
+                preview.append(_contents_summary(path), style="dim")
             preview.append(f"\nTotal: {human_size(result.freed_bytes)}", style="bold")
+            if result.refused:
+                preview.append("\n\nThis will be REFUSED:\n", style="red")
+                for path, reason in result.refused.items():
+                    preview.append(f"  ✗ {path} — {reason}\n", style="red")
             screen = ConfirmDeleteScreen(
                 heading="Permanently delete this orphan?",
                 preview=preview,
             )
         else:
-            total = sum(o.size_bytes for o in orphans)
+            # Dry-run every orphan so the totals reflect what the guard will
+            # actually allow, rather than the orphans' own reported sizes.
+            previews = [(o, self._delete_service.preview_orphan(o)) for o in orphans]
+            deletable = [(o, r) for o, r in previews if not r.failed]
+            refused = [(o, r) for o, r in previews if r.failed]
+            total = sum(r.freed_bytes for _, r in deletable)
+
             preview = Text()
             preview.append(f"Delete ALL {len(orphans)} orphan(s)\n", style="bold")
-            preview.append(f"Total reclaimable: {human_size(total)}\n", style="dim")
+            preview.append(
+                f"{len(deletable)} deletable · {human_size(total)} reclaimable\n",
+                style="dim",
+            )
+            for orphan, result in deletable[:20]:
+                for path in result.removed:
+                    preview.append(f"  • {path}\n")
+                    preview.append(_contents_summary(path), style="dim")
+            if refused:
+                preview.append(
+                    f"\n{len(refused)} will be REFUSED and left on disk:\n", style="red"
+                )
+                for orphan, result in refused[:5]:
+                    reason = next(iter(result.refused.values()), "refused")
+                    preview.append(f"  ✗ {orphan.reason} — {reason}\n", style="red")
             screen = ConfirmDeleteScreen(
                 heading="Permanently delete every orphan?",
                 preview=preview,
@@ -446,7 +571,9 @@ class SxApp(App):
 
     def action_show_orphans(self) -> None:
         """Open the orphan-cleanup screen."""
-        assert self._delete_service is not None
+        if self._delete_service is None:
+            self.notify("Delete service unavailable.", severity="error")
+            return
         orphans = self._collect_orphans()
         screen = OrphanScreen(
             orphans=orphans,

@@ -122,6 +122,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         print("No sessions found.")
     else:
         print(f"\n{total} session(s) across all harnesses.")
+    _maybe_notify_update()
     return 0
 
 

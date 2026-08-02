@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from sx.model import Message, Role, Session
+from sx.util import sanitize_text
 
 #: Emoji/label shown for each role in exported Markdown.
 _ROLE_HEADING: dict[Role, str] = {
@@ -66,7 +67,7 @@ def messages_to_markdown(
     """
     stamp = now or datetime.now()
     lines: list[str] = []
-    title = (session.title or session.session_id).replace("\n", " ").strip()
+    title = sanitize_text((session.title or session.session_id).replace("\n", " ").strip())
     lines.append(f"# {title}")
     lines.append("")
     lines.append(f"- **Harness:** {session.harness}")
@@ -92,15 +93,16 @@ def messages_to_markdown(
         lines.append(f"### {heading}{when}")
         lines.append("")
         if message.tool_summary:
-            lines.append(f"> ⚙ **{message.tool_summary}**")
+            lines.append(f"> ⚙ **{sanitize_text(message.tool_summary)}**")
             lines.append("")
         if message.thinking:
-            quoted = "\n".join("> " + ln for ln in message.thinking.splitlines())
+            thinking = sanitize_text(message.thinking)
+            quoted = "\n".join("> " + ln for ln in thinking.splitlines())
             lines.append("> 💭 _thinking_")
             lines.append(quoted)
             lines.append("")
         if message.text:
-            lines.append(message.text)
+            lines.append(sanitize_text(message.text))
             lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
@@ -148,6 +150,32 @@ def export_session(
     dest.mkdir(parents=True, exist_ok=True)
     messages = adapter.load(session)
     markdown = messages_to_markdown(session, messages, now=now)
-    out_path = dest / export_filename(session)
+    out_path = _unique_path(dest / export_filename(session))
     out_path.write_text(markdown, encoding="utf-8")
     return out_path
+
+
+def _unique_path(path: Path) -> Path:
+    """Return ``path``, or the first free ``name-2``, ``name-3``… variant.
+
+    Export filenames are derived from harness, date, a truncated session id, and
+    a title slug, so distinct sessions genuinely collide — a session duplicated
+    across renamed project folders produces the same name every time. Since this
+    function also backs "export before deleting", an overwrite would destroy the
+    very archive the user asked for, so collisions are never overwritten.
+
+    Args:
+        path: The desired output path.
+
+    Returns:
+        A path that does not currently exist.
+    """
+    if not path.exists():
+        return path
+    stem, suffix = path.stem, path.suffix
+    counter = 2
+    while True:
+        candidate = path.with_name(f"{stem}-{counter}{suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1

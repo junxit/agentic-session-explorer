@@ -148,8 +148,9 @@ sx update       # show (or, with --run, execute) the upgrade command
 
 A session written within the last 90 seconds is flagged `● LIVE`; deleting one
 requires typing `DELETE` to confirm. Bulk orphan deletion requires typing
-`DELETE <n>`. Exports default to `./session-exports/`; every deletion is
-appended to `./sx-deletions.log`.
+`DELETE <n>`. Exports default to `./session-exports/` and never overwrite an
+existing file. Every deletion is appended to
+`~/.local/state/sx/sx-deletions.log` (override with `SX_LOG_FILE`).
 
 ## Architecture
 
@@ -201,11 +202,33 @@ Installed copies will then prompt their users to upgrade.
 
 ## Safety
 
-`sx` deletes permanently — there is no trash or undo. To compensate, deletion
-is gated behind a preview, typed confirmation for bulk actions, a guard that
-refuses to touch anything outside known harness store roots, and a guard that
-refuses to delete a session that is currently being written. Every deletion is
-appended to `sx-deletions.log`.
+`sx` deletes permanently — there is no trash or undo. Everything below exists so
+that the confirmation you see is the whole truth about what is about to go:
+
+- **The preview is complete.** It lists the files to be removed, any non-file
+  work (a database-backed harness reports the row count), what a folder actually
+  contains — including nested transcripts and `memory/` files — and anything the
+  guard will refuse.
+- **Failures are never reported as success.** A refused deletion says so, keeps
+  its row, and leaves the file on disk.
+- **A store-root allowlist** blocks any target outside a harness's own
+  directory, and refuses a store root itself.
+- **Live sessions need a typed `DELETE`.** Liveness comes from the harness (file
+  mtime, or the database column that tracks activity); when it can't be
+  determined the session is treated as live rather than assumed safe.
+- **Bulk actions need a typed `DELETE <n>`**, with the count derived from the
+  same list that will be deleted.
+- **Export never overwrites.** Colliding archive names get a suffix, so
+  "export before deleting" cannot destroy the archive it just made.
+- **Untrusted transcript text can't drive your terminal.** Control sequences are
+  replaced with visible glyphs (`␛`, `␇`) in both the TUI and exported Markdown.
+- **Every deletion is logged** to `~/.local/state/sx/sx-deletions.log` (owner-only;
+  override with `SX_LOG_FILE`), and a logging failure is surfaced rather than
+  swallowed.
+
+Sessions whose project lives on an unmounted volume are treated as *unavailable*,
+not deleted, so unplugging a drive never turns real transcripts into cleanup
+candidates.
 
 ## License
 

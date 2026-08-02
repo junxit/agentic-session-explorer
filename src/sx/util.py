@@ -3,9 +3,45 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
+
+# C0 control characters and DEL, excluding tab (\x09) and newline (\x0a) which
+# are legitimate transcript content. Carriage return is included: it enables
+# line-overwriting tricks.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _control_marker(match: re.Match[str]) -> str:
+    """Map a control character to its visible Unicode Control Pictures glyph."""
+    code = ord(match.group())
+    if code == 0x7F:
+        return "␡"  # ␡
+    return chr(0x2400 + code)  # ␀ … ␟ — e.g. ESC → ␛, BEL → ␇
+
+
+def sanitize_text(text: str) -> str:
+    """Neutralize terminal control sequences in untrusted transcript text.
+
+    Chat logs can contain arbitrary bytes — including content an agent copied
+    from a web page. Rich strips only BEL/BS/VT/FF/CR, leaving ESC intact, so an
+    unsanitized transcript can drive the user's terminal when merely *viewed*:
+    set the window title, rewrite the clipboard via OSC 52, or clear the screen.
+
+    Control characters are replaced with visible, inert glyphs rather than
+    dropped, so the transcript still shows that something was there.
+
+    Args:
+        text: Untrusted text from a session transcript.
+
+    Returns:
+        The text with control characters replaced by Control Pictures glyphs.
+    """
+    if not text:
+        return text
+    return _CONTROL_RE.sub(_control_marker, text)
 
 
 def home() -> Path:
@@ -91,6 +127,36 @@ def dir_size(path: Path) -> int:
         return total
     except OSError:
         return 0
+
+
+#: Directories under which removable/!network volumes are conventionally mounted.
+_MOUNT_PARENTS = ("Volumes", "mnt", "media")
+
+
+def mount_unavailable(path: str | Path) -> bool:
+    """Return True if ``path`` lives on a mount point that is not present.
+
+    A project directory on an unplugged external drive is *unavailable*, not
+    deleted. Without this distinction a simple ``exists()`` check would classify
+    every session on that drive as an orphan and offer to permanently delete
+    real transcripts because a disk was unmounted.
+
+    Args:
+        path: An absolute path to test.
+
+    Returns:
+        True if the path's mount root (e.g. ``/Volumes/Archive``) is absent.
+    """
+    try:
+        parts = Path(path).parts
+    except (TypeError, ValueError):
+        return False
+    if len(parts) >= 3 and parts[1] in _MOUNT_PARENTS:
+        try:
+            return not Path(*parts[:3]).exists()
+        except OSError:
+            return False
+    return False
 
 
 def is_within(path: Path, roots: list[Path]) -> bool:

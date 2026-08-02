@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from sx.util import human_size
+
 
 class Role(enum.Enum):
     """Who produced a message turn.
@@ -170,3 +172,40 @@ class DeleteResult:
     skipped: dict[Path, str] = field(default_factory=dict)
     dry_run: bool = False
     note: str | None = None
+
+    @property
+    def refused(self) -> dict[Path, str]:
+        """Targets actively refused or errored, excluding merely-absent ones.
+
+        A path that simply did not exist is not a failure worth alarming the user
+        about; a path blocked by the store-root guard, or one that errored, is.
+        """
+        return {
+            path: reason
+            for path, reason in self.skipped.items()
+            if "does not exist" not in reason
+        }
+
+    @property
+    def failed(self) -> bool:
+        """True if nothing happened and at least one target was refused.
+
+        ``note`` counts as something happening: for database-backed harnesses the
+        real work is row removal, which has no path to report in ``removed``.
+        """
+        return not self.removed and not self.note and bool(self.refused)
+
+    def summary(self) -> str:
+        """One-line human summary of what this result actually did.
+
+        Used for both the confirmation preview and the post-action notification so
+        the two can never disagree about the outcome.
+        """
+        bits: list[str] = []
+        if self.removed:
+            bits.append(f"{len(self.removed)} path(s) · {human_size(self.freed_bytes)}")
+        if self.note:
+            bits.append(self.note)
+        if self.refused:
+            bits.append(f"{len(self.refused)} refused")
+        return " · ".join(bits) if bits else "nothing to remove"

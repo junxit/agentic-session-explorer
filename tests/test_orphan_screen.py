@@ -45,7 +45,7 @@ class _FakeAdapter(HarnessAdapter):
     def find_orphans(self):
         return [
             Orphan(
-                harness="fake",
+                harness=self.name,
                 kind=OrphanKind.STRAY_TEMP,
                 paths=[p],
                 reason=f"stray {p.name}",
@@ -56,13 +56,24 @@ class _FakeAdapter(HarnessAdapter):
         ]
 
 
-def _wire(app, store, orphan_files, log_path):
+def _wire(app, store, orphan_files, log_path, adapter=None):
     """Inject a synthetic adapter into the app, replacing the real registry."""
-    adapter = _FakeAdapter(store, orphan_files)
-    app._adapters_by_name = {"fake": adapter}
-    app._delete_service = DeleteService({"fake": adapter}, log_path=log_path)
+    adapter = adapter or _FakeAdapter(store, orphan_files)
+    app._adapters_by_name = {adapter.name: adapter}
+    app._delete_service = DeleteService({adapter.name: adapter}, log_path=log_path)
     app._sessions_by_harness = {}
     app._load_errors = []
+    app._live_cache = {}
+
+
+@pytest.fixture(autouse=True)
+def _no_real_registry(monkeypatch):
+    """Keep ``on_mount`` away from the developer's real harness stores.
+
+    ``SxApp()`` runs a full registry scan on mount, before a test can inject its
+    fake adapter, which made these tests read the real ``~/.claude`` and friends.
+    """
+    monkeypatch.setattr("sx.tui.app.build_registry", lambda: ([], []))
 
 
 @pytest.mark.asyncio
@@ -141,6 +152,75 @@ async def test_orphan_delete_all_requires_phrase_then_removes_all(tmp_path):
         await pilot.pause()
         await pilot.pause()
         assert all(not p.exists() for p in files)
+
+
+class _RefusingAdapter(_FakeAdapter):
+    """Reports an orphan that its own store roots do not permit deleting.
+
+    Mirrors the shipped Gemini defect: ``find_orphans`` emitted paths above the
+    declared roots, so the guard refused every one of them.
+    """
+
+    name = "refusing"
+
+    def store_roots(self):
+        """Return a root that does not contain the reported orphan."""
+        return [self._root / "narrower"]
+
+
+@pytest.mark.asyncio
+async def test_refused_orphan_keeps_its_row_and_reports_failure(tmp_path):
+    """A refused delete must not be reported as success.
+
+    The shipped behaviour dropped the row and toasted "Deleted orphan · freed
+    0 B" while the file remained on disk — the failure only appeared in the
+    op-log.
+    """
+    store = tmp_path / "store"
+    store.mkdir()
+    # The declared root exists (so the adapter is "available"), but the reported
+    # orphan sits outside it — exactly the shipped Gemini geometry.
+    (store / "narrower").mkdir()
+    stray = store / "stray.tmp"
+    stray.write_text("x")
+
+    notices: list[tuple[str, str]] = []
+    app = SxApp()
+    async with app.run_test(size=(160, 45)) as pilot:
+        await pilot.pause()
+        _wire(
+            app,
+            store,
+            [stray],
+            tmp_path / "ops.log",
+            adapter=_RefusingAdapter(store, [stray]),
+        )
+        original_notify = app.notify
+        app.notify = lambda msg, **kw: (  # type: ignore[assignment]
+            notices.append((str(msg), kw.get("severity", "information"))),
+            original_notify(msg, **kw),
+        )[1]
+
+        app.action_show_orphans()
+        await pilot.pause()
+        await pilot.pause()
+        assert isinstance(app.screen, OrphanScreen)
+        assert len(app.screen._orphans) == 1
+
+        app.screen.query_one("#orphan-table", DataTable).focus()
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmDeleteScreen)
+        await pilot.click("#confirm")
+        await pilot.pause()
+        await pilot.pause()
+
+        assert stray.exists(), "refused file must remain on disk"
+        assert len(app.screen._orphans) == 1, "the row must survive a refusal"
+        assert any(sev == "error" for _, sev in notices), notices
+        assert not any("Deleted orphan" in msg for msg, _ in notices), notices
 
 
 @pytest.mark.asyncio

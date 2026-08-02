@@ -11,6 +11,7 @@ from __future__ import annotations
 from rich.text import Text
 
 from sx.model import Message, Role
+from sx.util import sanitize_text
 
 #: Rich style applied to each role's header line.
 ROLE_STYLE: dict[Role, str] = {
@@ -72,15 +73,18 @@ def messages_to_text(messages: list[Message]) -> Text:
         if message.timestamp:
             out.append("  " + message.timestamp.strftime("%Y-%m-%d %H:%M"), style="dim")
         if message.tool_summary:
-            out.append("  ⚙ " + message.tool_summary, style="yellow")
+            out.append("  ⚙ " + sanitize_text(message.tool_summary), style="yellow")
         out.append("\n")
 
         if message.thinking:
-            out.append(_prefix_lines(message.thinking, "  💭 "), style="dim italic")
+            out.append(
+                _prefix_lines(sanitize_text(message.thinking), "  💭 "),
+                style="dim italic",
+            )
             out.append("\n")
 
         if message.text:
-            out.append(message.text)
+            out.append(sanitize_text(message.text))
             out.append("\n")
 
     return out

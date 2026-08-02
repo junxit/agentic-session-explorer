@@ -40,19 +40,21 @@ class GeminiAdapter(JsonlFolderAdapter):
     display = "Gemini CLI"
 
     def store_roots(self) -> list[Path]:
-        """Return the existing managed directories for Gemini.
+        """Return the managed directory for Gemini.
+
+        This is ``~/.gemini`` itself rather than only ``tmp``/``history``,
+        because stray ``projects.json.*.tmp`` files reported by
+        :meth:`find_orphans` live directly in that directory. When the roots were
+        narrower, every one of those orphans was silently refused by the delete
+        guard while the UI reported success.
+
+        Returned unfiltered by existence so the value is stable and doubles as
+        the delete-guard allowlist.
 
         Returns:
-            The existing directories among ``~/.gemini/tmp`` and
-            ``~/.gemini/history``.
+            ``[~/.gemini]``.
         """
-        base = home() / ".gemini"
-        roots = []
-        for sub in ("tmp", "history"):
-            d = base / sub
-            if d.exists():
-                roots.append(d)
-        return roots
+        return [home() / ".gemini"]
 
     def session_files(self) -> Iterator[Path]:
         """Yield Gemini chat session files.
@@ -304,10 +306,14 @@ class GeminiAdapter(JsonlFolderAdapter):
         return messages
 
     def _session_from_file(self, path: Path) -> Session:
-        """Build a :class:`Session`, enriching creation time and message count.
+        """Build a :class:`Session`, enriching creation time from the header.
 
-        The header's ``startTime`` populates ``created``; because chat files are
-        small they are replayed here to populate ``message_count``.
+        Only the first line is read. An earlier version replayed the whole
+        mutation log here to populate ``message_count``, which made discovery
+        O(file size x number of ``$set`` operations) for *every* session and
+        violated the "cheap metadata only" contract of
+        :meth:`~sx.adapters.base.JsonlFolderAdapter.discover`. The count is
+        available once a session is opened.
 
         Args:
             path: The chat session file to describe.
@@ -319,10 +325,6 @@ class GeminiAdapter(JsonlFolderAdapter):
         first = read_first_line(path)
         if isinstance(first, dict) and self._is_header(first):
             session.created = parse_ts(first.get("startTime"))
-        try:
-            session.message_count = len(self._messages(path))
-        except Exception:
-            session.message_count = None
         return session
 
     def find_orphans(self) -> list[Orphan]:

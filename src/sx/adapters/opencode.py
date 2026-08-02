@@ -24,6 +24,7 @@ Because sessions are rows, **deletion must remove rows, never the ``.db`` file**
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Iterator
 from datetime import datetime
@@ -76,6 +77,21 @@ def _ms_to_dt(value: object) -> datetime | None:
         return None
 
 
+#: opencode session ids look like ``ses_17f68c472ffeYwIg8S4I4Nz4Z8``. Anything
+#: outside this alphabet is rejected before it reaches a filesystem path.
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _valid_session_id(session_id: object) -> bool:
+    """Return True if ``session_id`` is safe to interpolate into a path.
+
+    The id originates in the database, which any process with filesystem access
+    could write to, so it is treated as untrusted input rather than assumed
+    well-formed.
+    """
+    return isinstance(session_id, str) and bool(_SESSION_ID_RE.match(session_id))
+
+
 def _loads(data: object) -> dict:
     """Parse a JSON string into a dict, tolerantly returning ``{}`` on failure."""
     if isinstance(data, str) and data:
@@ -117,7 +133,12 @@ class OpencodeAdapter(HarnessAdapter):
         return self._store() / "opencode.db"
 
     def _sidecar_path(self, session_id: str) -> Path:
-        """Return the per-session sidecar ``storage/session_diff/<id>.json``."""
+        """Return the per-session sidecar ``storage/session_diff/<id>.json``.
+
+        The id comes from a database column, so it is interpolated into a path
+        only after :func:`_valid_session_id` has vetted it; otherwise a crafted
+        id such as ``../../x`` would escape the sidecar directory.
+        """
         return self._store() / "storage" / "session_diff" / f"{session_id}.json"
 
     def store_roots(self) -> list[Path]:
@@ -187,6 +208,8 @@ class OpencodeAdapter(HarnessAdapter):
             try:
                 if row["parent_id"] is not None:
                     continue  # skip sub-agent sessions
+                if not _valid_session_id(row["id"]):
+                    continue  # malformed id — never build a path from it
                 session = self._session_from_row(row)
             except (sqlite3.Error, KeyError, IndexError):
                 continue
@@ -383,6 +406,11 @@ class OpencodeAdapter(HarnessAdapter):
             any); ``note`` records the database row count.
         """
         sid = session.session_id
+        if not _valid_session_id(sid):
+            return DeleteResult(
+                dry_run=dry_run,
+                note=f"refused: malformed session id {sid!r}",
+            )
         sidecar = self._sidecar_path(sid)
 
         if dry_run:
@@ -397,15 +425,16 @@ class OpencodeAdapter(HarnessAdapter):
             result.note = f"would delete {n} db row(s)"
             return result
 
-        # 1) Unlink the sidecar through the guarded path remover (reuses the
-        #    store-root allowlist; the sidecar is inside the store root).
-        result = self._delete_paths([sidecar], dry_run=False)
+        # The database transaction runs FIRST and the sidecar is unlinked only
+        # after it commits. The reverse order left three failure paths (missing
+        # db, guard refusal, sqlite error) in which the sidecar was already gone
+        # while every row survived — an inconsistent state nothing could detect,
+        # since orphan scanning only looks for sidecars without sessions.
+        result = DeleteResult()
 
-        # 2) Delete the session's rows in a single transaction. Never touch the
-        #    db file itself; defense-in-depth: it must live inside the store root.
         db = self._db_path()
         if not db.exists():
-            result.note = "database not found; no rows deleted"
+            result.note = "database not found; nothing deleted"
             return result
         if not is_within(db, self.store_roots()):
             result.skipped[db] = "database outside store root (refused)"
@@ -437,8 +466,43 @@ class OpencodeAdapter(HarnessAdapter):
             if con is not None:
                 con.close()
 
+        # Rows are gone; now remove the sidecar through the guarded remover
+        # (it lives inside the store root, so the allowlist permits it).
+        sidecar_result = self._delete_paths([sidecar], dry_run=False)
+        result.removed.extend(sidecar_result.removed)
+        result.freed_bytes += sidecar_result.freed_bytes
+        for path, reason in sidecar_result.refused.items():
+            result.skipped[path] = reason
+
         result.note = f"deleted {total} db row(s) across {len(_CASCADE_TABLES) + 1} tables"
         return result
+
+    def last_activity(self, session: Session) -> datetime | None:
+        """Return the session's last-write time from the database.
+
+        Overrides the file-mtime default: opencode's per-session sidecar is
+        optional and lags the conversation, so using it as the liveness signal
+        meant the live-delete guard almost never engaged. ``session.time_updated``
+        is what actually tracks activity.
+
+        Args:
+            session: The session to probe.
+
+        Returns:
+            The last-update time, or ``None`` if it cannot be read.
+        """
+        con = self._connect_ro()
+        if con is None:
+            return None
+        try:
+            row = con.execute(
+                "SELECT time_updated FROM session WHERE id = ?", (session.session_id,)
+            ).fetchone()
+        except sqlite3.Error:
+            return None
+        finally:
+            con.close()
+        return _ms_to_dt(row["time_updated"]) if row else None
 
     def _count_rows(self, session_id: str) -> int:
         """Count the rows a delete would remove for ``session_id`` (best effort)."""

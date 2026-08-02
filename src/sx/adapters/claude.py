@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Iterator
 
 from ..model import Message, Orphan, OrphanKind, Role, Session
-from ..util import dir_size, home, iter_jsonl, parse_ts
+from ..util import dir_size, home, human_size, iter_jsonl, mount_unavailable, parse_ts
 from .base import JsonlFolderAdapter
 
 # Slash-command / local-command wrappers that can lead a Claude user message
@@ -16,6 +16,13 @@ _COMMAND_NOISE_RE = re.compile(
     r"<(command-[a-z]+|local-command-[a-z]+)>.*?</\1>", re.DOTALL
 )
 _STRAY_TAG_RE = re.compile(r"</?[a-z][a-z0-9-]*>")
+
+# Session ids are UUIDs. Cascade deletion keys off this shape so a malformed or
+# hand-placed session file can never sweep unrelated ~/.claude state.
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 # Auxiliary ("cascade") directories under ``~/.claude`` that may hold artifacts
 # correlated with a session. They are included in :meth:`store_roots` so the
@@ -164,9 +171,16 @@ class ClaudeAdapter(JsonlFolderAdapter):
         cwd = self._cwd_from_file(path)
         if cwd:
             return cwd
+        # The folder-name decode is lossy — a genuine hyphen and a path
+        # separator are indistinguishable, and spaces encode as hyphens too, so
+        # it is wrong for most real project paths. Use it only when it happens to
+        # name a directory that exists; otherwise report "unknown" rather than a
+        # fabricated path that would make the session look like an orphan.
         folder = path.parent.name
         if folder:
-            return _decode_folder(folder)
+            decoded = _decode_folder(folder)
+            if Path(decoded).exists():
+                return decoded
         return None
 
     def session_id_for(self, path: Path, first: dict | None) -> str:
@@ -358,24 +372,27 @@ class ClaudeAdapter(JsonlFolderAdapter):
         return None
 
     def correlated_paths(self, session: Session) -> list[Path]:
-        """Return cascade artifacts whose names embed the session id.
+        """Return cascade artifacts keyed by this session's id.
 
-        Because this list feeds permanent deletion it is deliberately
-        conservative: every cascade directory is scanned, but only entries whose
-        name literally contains the full session id are returned. On the sampled
-        machine the cascade directories key their entries by unrelated
-        identifiers (agent UUIDs, file hashes, PIDs, shell snapshot ids), so this
-        typically returns nothing — which is the safe outcome. Should a future
-        layout key artifacts by session id, they are picked up automatically.
+        These feed permanent deletion, so matching is exact rather than a
+        substring test: the id must be a UUID and an entry must either *be* that
+        id or begin with it followed by a separator (``<id>.json``,
+        ``<id>-agent-<x>.json``). A plain substring match would be catastrophic —
+        a session file named ``a.jsonl`` yields the id ``a``, which appears in
+        nearly every filename in these directories.
+
+        Requiring UUID shape also means a hand-placed or malformed session file
+        can never trigger a cascade at all.
 
         Args:
             session: The session to inspect.
 
         Returns:
-            A list of matching auxiliary paths.
+            A list of matching auxiliary paths (commonly non-empty: on the
+            sampled machine ``file-history/`` keys entries by session id).
         """
         sid = session.session_id
-        if not sid:
+        if not sid or not _UUID_RE.match(sid):
             return []
         base = home() / ".claude"
         matches: list[Path] = []
@@ -384,18 +401,72 @@ class ClaudeAdapter(JsonlFolderAdapter):
             if not directory.is_dir():
                 continue
             for entry in sorted(directory.iterdir()):
-                if sid in entry.name:
+                name = entry.name
+                if name == sid or name.startswith(f"{sid}.") or name.startswith(f"{sid}-"):
                     matches.append(entry)
         return matches
+
+    def _folder_cwd(self, session_files: list[Path]) -> str | None:
+        """Return the project directory recorded inside a folder's sessions.
+
+        Every session in the folder is consulted, not just the alphabetically
+        first one: a single unreadable or truncated file must not decide the fate
+        of the whole folder.
+
+        Args:
+            session_files: The folder's top-level session files.
+
+        Returns:
+            The recorded working directory, or ``None`` if none could be read.
+        """
+        for path in session_files:
+            cwd = self._cwd_from_file(path)
+            if cwd:
+                return cwd
+        return None
+
+    def _leftover_reason(self, folder: Path) -> tuple[str, int]:
+        """Describe what a folder without top-level sessions actually contains.
+
+        Deletion is recursive, so "contains no session files" is a dangerously
+        incomplete description of a folder that still holds nested transcripts,
+        memory files, or tool output.
+
+        Args:
+            folder: The project folder to describe.
+
+        Returns:
+            A ``(reason, size_bytes)`` pair.
+        """
+        try:
+            files = [p for p in folder.rglob("*") if p.is_file()]
+        except OSError:
+            files = []
+        size = dir_size(folder)
+        if not files:
+            return "empty project folder", size
+        nested = [p for p in files if p.suffix == ".jsonl"]
+        memory = [p for p in files if p.suffix == ".md" and "memory" in p.parts]
+        extras = [f"{len(files)} file(s), {human_size(size)}"]
+        if nested:
+            extras.insert(0, f"{len(nested)} nested transcript(s)")
+        if memory:
+            extras.insert(0, f"{len(memory)} memory file(s)")
+        return "no top-level sessions; contains " + ", ".join(extras), size
 
     def find_orphans(self) -> list[Orphan]:
         """Find orphaned Claude project folders.
 
-        A folder with no session files is reported as :attr:`OrphanKind.EMPTY`.
-        A folder whose project still has sessions but whose working directory no
-        longer exists is reported as :attr:`OrphanKind.DEAD_PROJECT`; the
-        working directory is read from inside a session file (exact) and falls
-        back to the lossy folder-name decode only when unavailable.
+        A folder without top-level session files is reported as
+        :attr:`OrphanKind.EMPTY`, with a reason stating exactly what it still
+        contains. A folder whose recorded working directory no longer exists is
+        reported as :attr:`OrphanKind.DEAD_PROJECT`.
+
+        Two deliberate abstentions keep real data out of the deletion list:
+        a folder whose working directory cannot be read is never called dead
+        (the lossy folder-name decode is not trusted for this decision), and a
+        directory on an unmounted volume is treated as unavailable rather than
+        gone.
 
         Returns:
             A list of discovered orphans.
@@ -409,19 +480,22 @@ class ClaudeAdapter(JsonlFolderAdapter):
                 continue
             session_files = sorted(folder.glob("*.jsonl"))
             if not session_files:
+                reason, size = self._leftover_reason(folder)
                 orphans.append(
                     Orphan(
                         harness=self.name,
                         kind=OrphanKind.EMPTY,
                         paths=[folder],
-                        reason="project folder contains no session files",
-                        size_bytes=dir_size(folder),
+                        reason=reason,
+                        size_bytes=size,
                     )
                 )
                 continue
-            cwd = self._cwd_from_file(session_files[0])
+            cwd = self._folder_cwd(session_files)
             if cwd is None:
-                cwd = _decode_folder(folder.name)
+                continue  # unknown project directory — never assume it is dead
+            if mount_unavailable(cwd):
+                continue  # volume offline, not deleted
             if not Path(cwd).exists():
                 orphans.append(
                     Orphan(

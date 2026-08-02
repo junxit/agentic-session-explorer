@@ -28,7 +28,7 @@ from textual.widgets import (
 )
 
 from sx.model import Orphan
-from sx.util import human_size
+from sx.util import human_size, sanitize_text
 
 
 class ConfirmDeleteScreen(ModalScreen):
@@ -204,11 +204,16 @@ class OrphanScreen(Screen):
         table = self.query_one("#orphan-table", DataTable)
         table.clear()
         for orphan in self._orphans:
+            # Cells are Text objects, never str: Textual runs str cells through
+            # Text.from_markup, and orphan reasons embed untrusted data (a
+            # project cwd read from a session file, or a .project_root's
+            # contents). As markup that could restyle the table, emit real
+            # terminal hyperlinks, or raise MarkupError and wedge this screen.
             table.add_row(
-                orphan.harness,
-                orphan.kind.value,
-                human_size(orphan.size_bytes),
-                orphan.reason,
+                Text(orphan.harness),
+                Text(orphan.kind.value),
+                Text(human_size(orphan.size_bytes)),
+                Text(sanitize_text(orphan.reason)),
             )
         self.query_one("#orphan-summary", Static).update(self._summary())
         if not self._orphans:
@@ -240,27 +245,61 @@ class OrphanScreen(Screen):
 
     @work
     async def _run_delete_one(self, orphan: Orphan) -> None:
-        """Confirm and delete a single orphan, then refresh the table."""
+        """Confirm and delete a single orphan, then refresh the table.
+
+        An orphan whose deletion was refused stays in the list: removing the row
+        would tell the user it is gone when it is still on disk.
+        """
         ok = await self._confirm([orphan])
         if not ok:
             return
         result = self._on_delete(orphan)
+        if result.failed:
+            reason = next(iter(result.refused.values()), "unknown reason")
+            self.app.notify(
+                f"Not deleted — {reason}", severity="error", timeout=10
+            )
+            return
         self._orphans.remove(orphan)
         self._reload_table()
-        self.app.notify(
-            f"Deleted orphan · freed {human_size(result.freed_bytes)}"
-        )
+        self.app.notify(f"Deleted orphan · {result.summary()}")
 
     @work
     async def _run_delete_all(self) -> None:
-        """Confirm and delete all orphans, then refresh the table."""
+        """Confirm and delete all orphans, then refresh the table.
+
+        Only the orphans that were actually removed leave the list; refused ones
+        remain visible with an explanation.
+        """
         ok = await self._confirm(list(self._orphans))
         if not ok:
             return
         freed = 0
+        deleted = 0
+        refused: list[str] = []
         for orphan in list(self._orphans):
             result = self._on_delete_all(orphan)
+            if result.failed:
+                refused.append(next(iter(result.refused.values()), "refused"))
+                continue
             freed += result.freed_bytes
-        self._orphans.clear()
+            deleted += 1
+            self._orphans.remove(orphan)
         self._reload_table()
-        self.app.notify(f"Deleted all orphans · freed {human_size(freed)}")
+
+        if not deleted:
+            self.app.notify(
+                f"Nothing was deleted — {len(refused)} refused "
+                f"({refused[0] if refused else 'unknown reason'})",
+                severity="error",
+                timeout=10,
+            )
+        elif refused:
+            self.app.notify(
+                f"Deleted {deleted} · freed {human_size(freed)} · "
+                f"{len(refused)} refused ({refused[0]})",
+                severity="warning",
+                timeout=10,
+            )
+        else:
+            self.app.notify(f"Deleted {deleted} orphan(s) · freed {human_size(freed)}")
