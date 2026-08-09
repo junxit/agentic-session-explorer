@@ -1,7 +1,7 @@
 [project]
 name = "sx"
 version = "0.4.2"
-description = "A terminal TUI to browse and delete AI coding-harness sessions (Claude Code, Codex, Gemini, and more)."
+description = "Explore, archive, and safely delete the chat sessions AI coding agents (Claude Code, Codex, Gemini, and more) leave on your machine — all from one terminal TUI."
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "MIT" }
@@ -12,6 +12,12 @@ dependencies = [
     "textual>=0.79",
     "rich>=13.7",
 ]
+
+[project.urls]
+Homepage = "https://github.com/junxit/agentic-session-explorer"
+Repository = "https://github.com/junxit/agentic-session-explorer"
+Issues = "https://github.com/junxit/agentic-session-explorer/issues"
+Changelog = "https://github.com/junxit/agentic-session-explorer/blob/main/changelog.txt"
 
 [project.scripts]
 sx = "sx.cli:main"
