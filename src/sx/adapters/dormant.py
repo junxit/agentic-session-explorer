@@ -2,7 +2,7 @@
 
 Each adapter here names a real AI coding harness and the location it stores
 sessions, but advertises :attr:`~sx.model.Capability.NONE`. That makes the
-harness appear in the registry and UI — greyed out — without ever browsing or
+harness appear in the registry and UI — grayed out — without ever browsing or
 deleting anything, which keeps the tool honest until a full adapter is written.
 
 ``store_roots`` returns each harness's *canonical* locations (unfiltered by

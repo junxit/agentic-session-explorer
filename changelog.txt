@@ -1,6 +1,14 @@
 Changelog
 =========
 
+0.4.2
+-----
+- Spelling only: the source, docstrings, README and this changelog now use US
+  English throughout (grayed, honors, canceled, labeled, behavior, summarize,
+  normalize). No behavior change; no CLI flag, environment variable, config key
+  or public name was touched. The one renamed identifier is a test function,
+  test_op_log_honors_an_explicit_override.
+
 0.4.1
 -----
 - The deletion op-log is written to ./sx-deletions.log again, next to the work
@@ -111,13 +119,13 @@ Robustness and performance
 - M3: grouping modes (project/date/recency, cycle with `m`), live title/project
   filter (`/`), and Claude title cleanup (strips slash-command plumbing).
 - M2: interactive Textual TUI (`sx` / `sx tui`). Two panes — harness/project/session
-  tree (dormant harnesses greyed) and a scrollable transcript loaded lazily in a
+  tree (dormant harnesses grayed) and a scrollable transcript loaded lazily in a
   background thread. Harness-agnostic Rich renderer (sx/render.py), markup-injection
   safe. Verified headless via run_test(): 35 sessions, 608-msg/3.6MB transcript opens.
 - M1: read-only core + `sx list`/`sx harnesses` CLI. Verified on real files
   (34 sessions: 21 Claude, 11 Codex, 2 Gemini), zero adapter load errors.
 - Adapters: Claude (in-file cwd, blocks, cascade), Codex (date-tree + session_meta),
-  Gemini (mutation-log replay), plus 7 dormant harnesses (greyed until installed).
+  Gemini (mutation-log replay), plus 7 dormant harnesses (grayed until installed).
 - Core: normalized Session/Message model, HarnessAdapter + JsonlFolderAdapter base,
   registry with per-adapter failure isolation, path-allowlist + dry-run delete guard.
 - Scaffolded project: pyproject (uv/hatchling, sx entrypoint, py3.13+), .gitignore, README, package layout.

@@ -366,7 +366,7 @@ def test_op_log_defaults_to_the_working_directory(tmp_path: Path, monkeypatch):
     assert ".local" not in str(path)
 
 
-def test_op_log_honours_an_explicit_override(tmp_path: Path, monkeypatch):
+def test_op_log_honors_an_explicit_override(tmp_path: Path, monkeypatch):
     """``SX_LOG_FILE`` collects deletions from every directory into one file."""
     from sx.service import default_log_path
 

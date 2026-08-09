@@ -19,7 +19,7 @@ def _preview(value, limit: int) -> str:
     """Render an arbitrary value to a short single-line preview string.
 
     Args:
-        value: The value to summarise (string, mapping, or other JSON value).
+        value: The value to summarize (string, mapping, or other JSON value).
         limit: Maximum number of characters to keep.
 
     Returns:
@@ -273,7 +273,7 @@ class CodexAdapter(JsonlFolderAdapter):
 
     @staticmethod
     def _output_text(output) -> str:
-        """Normalise a tool-output value to text.
+        """Normalize a tool-output value to text.
 
         Codex tool output may be a plain string or a mapping with an ``output``
         key (and optional ``metadata``).

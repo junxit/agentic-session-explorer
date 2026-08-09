@@ -62,7 +62,7 @@ def test_not_opted_out_by_default(monkeypatch):
     assert up.opted_out() is False
 
 
-# --- caching behaviour -----------------------------------------------------
+# --- caching behavior ------------------------------------------------------
 
 @pytest.fixture
 def cache_dir(tmp_path, monkeypatch):

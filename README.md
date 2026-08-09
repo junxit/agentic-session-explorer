@@ -30,7 +30,7 @@ want.
   append-only deletion log. No accidental `rm -rf`.
 - **Pre-delete Markdown export** — optionally archive a transcript to Markdown
   before removing it (also available as a standalone export action).
-- **Forward-looking** — harnesses you have not installed yet appear greyed out
+- **Forward-looking** — harnesses you have not installed yet appear grayed out
   and light up the moment their session store shows up on disk.
 
 ## Supported harnesses

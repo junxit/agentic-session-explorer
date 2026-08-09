@@ -6,7 +6,7 @@ lives in :class:`JsonlFolderAdapter`; a concrete harness usually overrides only
 a few small hooks.
 
 Harnesses that are not installed still ship as adapter subclasses; their
-:meth:`HarnessAdapter.available` returns ``False`` and the UI greys them out
+:meth:`HarnessAdapter.available` returns ``False`` and the UI grays them out
 until their store appears on disk.
 """
 

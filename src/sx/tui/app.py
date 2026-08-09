@@ -1,7 +1,7 @@
 """The ``sx`` Textual application: a two-pane session browser with cleanup.
 
 Left pane: a tree of sessions, grouped by project / date / recency (cycle with
-``m``) and filterable (``/``). Installed-but-unsupported harnesses appear greyed.
+``m``) and filterable (``/``). Installed-but-unsupported harnesses appear grayed.
 Right pane: the selected session's transcript, scrollable, parsed lazily on a
 background thread.
 
@@ -50,7 +50,7 @@ def _contents_summary(path: Path) -> str:
 
     Deleting an orphaned folder is recursive, so the confirmation must say what
     is inside it — transcripts and memory files in particular are easy to destroy
-    unknowingly when a folder is labelled merely "orphan".
+    unknowingly when a folder is labeled merely "orphan".
 
     Args:
         path: The target about to be deleted.
@@ -212,7 +212,7 @@ class SxApp(App):
             sessions = filter_sessions(self._sessions_by_harness[name], self._filter)
             self._add_ready_harness(tree.root, adapter, sessions)
 
-        # Dormant / unavailable harnesses, greyed.
+        # Dormant / unavailable harnesses, grayed.
         for adapter in self._adapters_by_name.values():
             if adapter.name in self._sessions_by_harness:
                 continue
@@ -513,7 +513,7 @@ class SxApp(App):
             orphans: The orphan(s) about to be deleted.
 
         Returns:
-            True if the user confirmed, False if they cancelled.
+            True if the user confirmed, False if they canceled.
         """
         if self._delete_service is None or not orphans:
             return False

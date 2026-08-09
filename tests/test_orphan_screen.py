@@ -172,7 +172,7 @@ class _RefusingAdapter(_FakeAdapter):
 async def test_refused_orphan_keeps_its_row_and_reports_failure(tmp_path):
     """A refused delete must not be reported as success.
 
-    The shipped behaviour dropped the row and toasted "Deleted orphan · freed
+    The shipped behavior dropped the row and toasted "Deleted orphan · freed
     0 B" while the file remained on disk — the failure only appeared in the
     op-log.
     """

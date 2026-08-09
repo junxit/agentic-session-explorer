@@ -34,7 +34,7 @@ from sx.util import human_size, sanitize_text
 class ConfirmDeleteScreen(ModalScreen):
     """Confirm a permanent deletion.
 
-    The screen dismisses with ``None`` if cancelled, or a result dict
+    The screen dismisses with ``None`` if canceled, or a result dict
     ``{"export": bool}`` if confirmed. When ``typed_phrase`` is set the Delete
     button stays disabled until the user types that exact phrase — used for live
     sessions and bulk operations.

@@ -8,7 +8,7 @@ it is careful):
   :data:`DEFAULT_TTL_HOURS` (default 24h); results are cached on disk.
 * **Fail-silent** — any network/parse error returns ``None``; the check must
   never break or noticeably slow down ``sx``.
-* **Opt-out** — honours ``SX_NO_UPDATE_CHECK`` (and ``--no-update-check``).
+* **Opt-out** — honors ``SX_NO_UPDATE_CHECK`` (and ``--no-update-check``).
 * **Version signal** — the latest GitHub *release* tag, falling back to the
   highest ``vX.Y.Z`` git tag. Publishing an update therefore means cutting a
   release/tag, not just pushing to ``main``.
@@ -114,7 +114,7 @@ _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 def _cache_file() -> Path:
-    """Return the on-disk cache path (honours ``XDG_CACHE_HOME``)."""
+    """Return the on-disk cache path (honors ``XDG_CACHE_HOME``)."""
     base = os.environ.get("XDG_CACHE_HOME")
     root = Path(base) if base else Path.home() / ".cache"
     return root / "sx" / "update-check.json"
