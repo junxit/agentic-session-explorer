@@ -1,6 +1,16 @@
 Changelog
 =========
 
+0.5.1
+-----
+- The `M` key (move the project directory, then re-point its sessions) is shown
+  in the footer. It was hidden, following the pattern of the vim-style
+  navigation aliases j/k/g/G/tab — but those only duplicate the arrow keys,
+  whereas `M` is a primary action and the more consequential of the two move
+  keys, since it moves a real directory on disk rather than only session
+  records. Hiding it left the riskier key as the undiscoverable one. The footer
+  now reads "m Move" and "M Move dir".
+
 0.5.0
 -----
 Move a project to a new directory. When you relocate a repo, every harness keeps
