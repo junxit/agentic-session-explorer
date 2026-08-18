@@ -55,6 +55,18 @@ def _wire(app, tmp_path: Path, monkeypatch, project: Path):
     return adapter
 
 
+def test_both_move_keys_are_discoverable_in_the_footer():
+    """``M`` is a primary action, not a vim-style alias, so the footer shows it.
+
+    It is also the more consequential of the two — it moves a real directory on
+    disk — so it must not be the one a user cannot find.
+    """
+    shown = {binding.key: binding.description for binding in SxApp.BINDINGS if binding.show}
+    assert shown.get("m") == "Move"
+    assert shown.get("M") == "Move dir"
+    assert "j" not in shown  # navigation aliases stay hidden
+
+
 @pytest.mark.asyncio
 async def test_b_cycles_the_grouping_mode(tmp_path, monkeypatch):
     """Grouping moved from ``m`` to ``b`` so ``m``/``M`` could become move."""

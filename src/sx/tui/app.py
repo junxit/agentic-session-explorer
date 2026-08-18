@@ -101,7 +101,11 @@ class SxApp(App):
         Binding("e", "export_session", "Export"),
         Binding("d", "delete_session", "Delete"),
         Binding("m", "move_sessions", "Move"),
-        Binding("M", "relocate_project", "Move dir", show=False),
+        # Shown, unlike the vim-style aliases below: this is a primary action,
+        # and the more consequential of the two — it moves a real directory on
+        # disk, not just session records. Hiding it would leave the riskier key
+        # as the undiscoverable one.
+        Binding("M", "relocate_project", "Move dir"),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("g", "scroll_top", "Top", show=False),
