@@ -1,6 +1,66 @@
 Changelog
 =========
 
+0.5.0
+-----
+Move a project to a new directory. When you relocate a repo, every harness keeps
+pointing at the old path: the sessions group under a directory that no longer
+exists, get flagged as orphans, and the only thing sx offered was deletion. Now
+there is an inverse of delete.
+
+- `m` re-points the highlighted session's project at a new directory, for when
+  you have already moved it by hand. `M` moves the project directory itself
+  first, then does the same. `sx move --from PATH --to PATH [--relocate]` does
+  either from the shell, with `--dry-run` to see the plan and stop.
+- One move covers every harness holding sessions at that path. Claude re-points
+  the `cwd` recorded throughout each transcript and then moves the project
+  folder to the name the new path encodes to, carrying `memory/` and each
+  session's `<session-id>/` sidecar with it. Codex re-points the `cwd` in its
+  `session_meta` and every `turn_context`. Gemini rewrites the `.project_root`
+  marker and re-keys `projects.json`. opencode updates the session's `directory`
+  and `path` columns and its workspace, in one transaction.
+- Only the structural working-directory field is rewritten. A path mentioned in
+  tool output or in your own prose is historical record and is left as written.
+  Matching is boundary-aware, so moving `proj` carries `proj/docs` along and
+  leaves `proj-old` alone.
+- A move is reversible: running it in reverse restores the previous state byte
+  for byte, and the op-log records both endpoints so the old path stays readable
+  afterwards. Moves are logged alongside deletions in `sx-deletions.log`.
+- Nothing is overwritten. If the harness has already run at the new path the
+  stores are merged entry by entry and any colliding name is refused, with the
+  refusal shown in the confirmation rather than discovered afterwards.
+- Rewrites are atomic: a new copy is written beside the original and swapped in,
+  lines that cannot be parsed are copied through byte for byte (the tolerant
+  JSONL reader drops them, which would have silently deleted every
+  partially-written record), and the write is abandoned if the harness appended
+  to the file while it was in progress.
+- Re-pointing Claude's own project state is opt-in — `--claude-config`, or the
+  checkbox in the dialog — covering the `~/.claude.json` `projects` entry (trust
+  decision, `allowedTools`, MCP servers) and `~/.claude/history.jsonl`. Off by
+  default because those files belong to a harness that may be running; the write
+  is abandoned if either changes underneath it. Existing settings at the
+  destination are never merged over.
+- Moving the project directory itself refuses a destination that already holds
+  anything, a destination inside the source, the home directory, and any
+  directory containing a harness store. It runs before the stores are touched,
+  so a failure leaves everything as it was. A cross-filesystem move is disclosed
+  as the copy-then-delete it really is.
+- opencode's shared `project.worktree` is deliberately never rewritten — a
+  project row is shared with sessions that were not part of the move — and the
+  plan says so instead of quietly skipping it.
+- Grouping moved from `m` to `b` to make room for the move keys.
+
+Two fixes found along the way
+
+- Every keybinding was dead at startup. Textual focused the filter Input, which
+  its CSS hides but which still received keys, so typing `o`, `e`, `d`, `r` did
+  nothing except silently fill an invisible filter box. The tree now takes focus
+  on mount.
+- Deleting a Claude session left its `<session-id>/` directory (sub-agent
+  transcripts, tool results) behind, unattributable to anything. It is now part
+  of the session's correlated paths, so it is both disclosed in the delete
+  preview and removed with the session.
+
 0.4.2
 -----
 - Spelling only: the source, docstrings, README and this changelog now use US

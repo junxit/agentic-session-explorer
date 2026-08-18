@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Iterator
 
 from ..model import Message, Role, Session
-from ..util import home, parse_ts, read_first_line
+from ..util import home, parse_ts, read_first_line, repoint
 from .base import JsonlFolderAdapter
 
 # Matches the trailing UUID in a ``rollout-<ts>-<uuid>.jsonl`` filename.
@@ -294,3 +294,34 @@ class CodexAdapter(JsonlFolderAdapter):
         if output is None:
             return ""
         return str(output)
+
+    def repoint_record(self, obj: dict, old: Path, new: Path) -> dict | None:
+        """Re-point the ``cwd`` recorded in a record's payload.
+
+        Codex writes the working directory into the opening ``session_meta``
+        envelope and again into every ``turn_context`` record, so both have to be
+        updated or the session would describe two different projects. The field
+        is matched structurally — any record whose payload carries a ``cwd`` —
+        rather than by record type, so a future record type that records the
+        working directory is handled too.
+
+        Codex files are never relocated: they live in a date-partitioned tree
+        that has nothing to do with the project directory.
+
+        Args:
+            obj: One parsed transcript record.
+            old: The project directory being moved away from.
+            new: The project directory being moved to.
+
+        Returns:
+            A replacement record, or ``None`` to leave the line untouched.
+        """
+        payload = obj.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        updated = repoint(payload.get("cwd", ""), old, new)
+        if updated is None:
+            return None
+        replacement = dict(obj)
+        replacement["payload"] = {**payload, "cwd": updated}
+        return replacement

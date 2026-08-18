@@ -1,26 +1,32 @@
-"""Deletion orchestration: previews, the active-session check, and the op-log.
+"""Operation orchestration: previews, the active-session check, and the op-log.
 
-The hard safety guard (refusing to touch anything outside a harness's store
-roots) lives in :meth:`sx.adapters.base.HarnessAdapter.delete`. This service
-layers the cross-cutting concerns on top:
+The hard safety guards (refusing to touch anything outside a harness's store
+roots) live in the adapters. These services layer the cross-cutting concerns on
+top of them:
 
-* a **dry-run preview** so the UI can show exactly what will be removed;
+* a **dry-run preview** so the UI can show exactly what will happen;
 * **active-session detection** — a session whose file changed within the last
   :data:`ACTIVE_WINDOW_SECONDS` is flagged as live, so the UI can warn and
-  require an extra confirmation before deleting it; and
-* an **append-only op-log** recording every deletion for accountability
-  (deletion is permanent — there is no undo).
+  require an extra confirmation before touching it; and
+* an **append-only op-log** recording every operation for accountability.
+
+:class:`DeleteService` covers permanent removal, which has no undo.
+:class:`MoveService` covers re-pointing a project at a new directory, which is
+reversible by running the inverse move — the op-log records both endpoints so
+that inverse is always recoverable.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
 
-from sx.model import DeleteResult, Orphan, Session
+from sx.model import Capability, DeleteResult, MovePlan, MoveResult, Orphan, Session
+from sx.util import is_under
 
 #: A session modified within this many seconds is considered "live".
 ACTIVE_WINDOW_SECONDS = 90
@@ -56,12 +62,75 @@ def _no_adapter(harness: str, *, dry_run: bool) -> DeleteResult:
     )
 
 
-class DeleteService:
-    """Coordinates previews, deletions, the active check, and op-logging.
+def _append_log(log_path: Path, entry: dict) -> str | None:
+    """Append one JSON record to the append-only op-log.
+
+    Args:
+        log_path: The log file to append to.
+        entry: The record to serialize.
+
+    Returns:
+        ``None`` on success, otherwise a message describing the failure. Callers
+        surface it rather than aborting: an audit-trail problem must never mask
+        the result the user is acting on, but a silent failure would mean
+        destructive work happening with no record at all.
+    """
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        existed = log_path.exists()
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+        if not existed:
+            # The log records chat-derived titles and absolute project paths;
+            # keep it owner-only rather than world-readable.
+            try:
+                log_path.chmod(0o600)
+            except OSError:
+                pass
+        return None
+    except OSError as exc:
+        return f"could not write {log_path}: {exc}"
+
+
+def session_is_active(adapter, session: Session, *, window: int = ACTIVE_WINDOW_SECONDS) -> bool:
+    """Return True if ``session`` was written within ``window`` seconds.
+
+    Liveness is asked of the owning adapter
+    (:meth:`~sx.adapters.base.HarnessAdapter.last_activity`) and recomputed at
+    call time, so the answer reflects the moment of the operation. File-backed
+    harnesses re-``stat`` their transcript; database-backed ones consult the row
+    that actually tracks conversation activity.
+
+    When liveness cannot be determined the session is treated as **active**.
+    That is the fail-safe direction: the cost of a wrong "live" is one extra
+    typed confirmation, while a wrong "not live" removes the only guard standing
+    between a keystroke and a conversation being written right now.
+
+    Args:
+        adapter: The adapter owning the session, or ``None``.
+        session: The session to test.
+        window: Recency window in seconds.
+
+    Returns:
+        True if the session appears to be in active use.
+    """
+    if adapter is None:
+        return True
+    try:
+        last = adapter.last_activity(session)
+    except Exception:  # noqa: BLE001 - a broken probe must not disable the guard
+        return True
+    if last is None:
+        return True
+    return (time.time() - last.timestamp()) <= window
+
+
+class _OperationService:
+    """Shared plumbing for the services: adapters, the op-log, and liveness.
 
     Args:
         adapters_by_name: Mapping of harness name to adapter instance.
-        log_path: Where to append the deletion op-log; defaults to
+        log_path: Where to append the op-log; defaults to
             :func:`default_log_path`.
     """
 
@@ -72,39 +141,25 @@ class DeleteService:
         #: Set when the last op-log write failed, so the UI can surface it.
         self.last_log_error: str | None = None
 
-    # --- active-session detection ---------------------------------------
-
     def is_active(self, session: Session, *, window: int = ACTIVE_WINDOW_SECONDS) -> bool:
-        """Return True if the session was written within ``window`` seconds.
+        """Return True if the session appears to be in active use."""
+        return session_is_active(
+            self._adapters.get(session.harness), session, window=window
+        )
 
-        Liveness is asked of the owning adapter
-        (:meth:`~sx.adapters.base.HarnessAdapter.last_activity`) and recomputed at
-        call time, so the answer reflects the moment of deletion. File-backed
-        harnesses re-``stat`` their transcript; database-backed ones consult the
-        row that actually tracks conversation activity.
+    def _write_log(self, entry: dict) -> None:
+        """Append ``entry`` to the op-log, recording any failure."""
+        self.last_log_error = _append_log(self._log_path, entry)
 
-        When liveness cannot be determined the session is treated as **active**.
-        That is the fail-safe direction: the cost of a wrong "live" is one extra
-        typed confirmation, while a wrong "not live" removes the only guard
-        standing between a keystroke and a conversation being written right now.
 
-        Args:
-            session: The session to test.
-            window: Recency window in seconds.
+class DeleteService(_OperationService):
+    """Coordinates previews, deletions, the active check, and op-logging.
 
-        Returns:
-            True if the session appears to be in active use.
-        """
-        adapter = self._adapters.get(session.harness)
-        if adapter is None:
-            return True
-        try:
-            last = adapter.last_activity(session)
-        except Exception:  # noqa: BLE001 - a broken probe must not disable the guard
-            return True
-        if last is None:
-            return True
-        return (time.time() - last.timestamp()) <= window
+    Args:
+        adapters_by_name: Mapping of harness name to adapter instance.
+        log_path: Where to append the deletion op-log; defaults to
+            :func:`default_log_path`.
+    """
 
     # --- sessions --------------------------------------------------------
 
@@ -205,21 +260,270 @@ class DeleteService:
         }
         if result.note:
             entry["note"] = result.note
+        self._write_log(entry)
+
+
+def _no_move_adapter(harness: str, *, dry_run: bool) -> MoveResult:
+    """Return a refusing move result for a harness with no registered adapter."""
+    return MoveResult(
+        dry_run=dry_run,
+        skipped={Path(f"<{harness}>"): "no adapter registered (refused)"},
+    )
+
+
+class MoveService(_OperationService):
+    """Coordinates re-pointing a project at a new directory across every harness.
+
+    Two operations share this service:
+
+    * **re-point** — the project directory was already moved by hand, and only
+      the harness stores need to catch up;
+    * **relocate** — ``sx`` moves the project directory itself first, then
+      re-points the stores.
+
+    Relocation runs *before* the stores are touched, and aborts everything if it
+    fails. The other order would leave sessions pointing at a directory that was
+    never created, which is exactly the broken state this feature exists to
+    repair.
+
+    Args:
+        adapters_by_name: Mapping of harness name to adapter instance.
+        log_path: Where to append the op-log; defaults to
+            :func:`default_log_path`.
+    """
+
+    # --- planning --------------------------------------------------------
+
+    def plan(
+        self,
+        old: Path,
+        new: Path,
+        *,
+        sessions_by_harness: dict[str, list[Session]] | None = None,
+        include_config: bool = False,
+    ) -> dict[str, MovePlan]:
+        """Ask every capable harness what re-pointing ``old`` to ``new`` involves.
+
+        Args:
+            old: The project directory being moved away from.
+            new: The project directory being moved to.
+            sessions_by_harness: Already-discovered sessions to reuse; when
+                omitted each adapter discovers its own.
+            include_config: Also re-point project state a harness keeps outside
+                its session store.
+
+        Returns:
+            A mapping of harness name to :class:`MovePlan`, containing only the
+            harnesses with something to say.
+        """
+        plans: dict[str, MovePlan] = {}
+        for name, adapter in self._adapters.items():
+            if Capability.MOVE not in adapter.capabilities or not adapter.available():
+                continue
+            pool = sessions_by_harness.get(name) if sessions_by_harness else None
+            try:
+                sessions = adapter.sessions_for_project(old, pool)
+            except Exception as exc:  # noqa: BLE001 - one harness must not break the rest
+                plans[name] = MovePlan(
+                    harness=name,
+                    old=old,
+                    new=new,
+                    blocked={Path(f"<{name}>"): f"discovery failed: {exc!r}"},
+                )
+                continue
+            if not sessions:
+                continue
+            try:
+                plan = adapter.plan_move(sessions, old, new)
+            except Exception as exc:  # noqa: BLE001
+                plan = MovePlan(
+                    harness=name,
+                    old=old,
+                    new=new,
+                    sessions=sessions,
+                    blocked={Path(f"<{name}>"): f"planning failed: {exc!r}"},
+                )
+            plan.include_config = include_config
+            plan.live = [s for s in sessions if self.is_active(s)]
+            if not plan.empty or plan.live:
+                plans[name] = plan
+        return plans
+
+    # --- relocating the project directory itself -------------------------
+
+    def check_relocation(self, old: Path, new: Path) -> str | None:
+        """Return why the project directory cannot be moved, or ``None`` if it can.
+
+        Moving the project directory reaches outside every harness store, so it
+        gets its own guards rather than borrowing the store-root allowlist:
+
+        * the source must be a real directory, and not the home directory, the
+          filesystem root, or any directory containing a harness store — moving
+          one of those would drag the session stores along with it;
+        * the destination must not already hold anything, so nothing is merged
+          into or overwritten; and
+        * the destination must not be inside the source.
+
+        Args:
+            old: The project directory to move.
+            new: Where it should end up.
+
+        Returns:
+            A refusal reason, or ``None`` when the move may proceed.
+        """
+        if old == new:
+            return "source and destination are the same directory"
+        if not old.is_dir():
+            return f"not a directory: {old}"
+        if is_under(str(new), old):
+            return "destination is inside the directory being moved"
+
         try:
-            self._log_path.parent.mkdir(parents=True, exist_ok=True)
-            existed = self._log_path.exists()
-            with self._log_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(entry) + "\n")
-            if not existed:
-                # The log records chat-derived titles and absolute project
-                # paths; keep it owner-only rather than world-readable.
-                try:
-                    self._log_path.chmod(0o600)
-                except OSError:
-                    pass
-            self.last_log_error = None
-        except OSError as exc:
-            # Never abort the caller over an audit-trail problem, but do not
-            # hide it either: a silent failure means deletions happen with no
-            # record at all.
-            self.last_log_error = f"could not write {self._log_path}: {exc}"
+            resolved = old.resolve()
+        except OSError:
+            resolved = old
+        if resolved == Path(resolved.anchor) or resolved == Path.home().resolve():
+            return f"refusing to move {resolved}"
+        for adapter in self._adapters.values():
+            try:
+                roots = adapter.store_roots()
+            except Exception:  # noqa: BLE001
+                continue
+            for root in roots:
+                if is_under(str(root), old):
+                    return f"refusing to move a directory containing a session store: {root}"
+
+        if not new.parent.is_dir():
+            return f"destination's parent does not exist: {new.parent}"
+        if new.exists():
+            if not new.is_dir():
+                return f"destination already exists: {new}"
+            try:
+                next(new.iterdir())
+            except StopIteration:
+                pass  # an empty directory is fine to move into
+            except OSError as exc:
+                return f"cannot read destination: {exc}"
+            else:
+                return f"destination is not empty: {new}"
+        return None
+
+    def crosses_devices(self, old: Path, new: Path) -> bool:
+        """Return True if the relocation would cross filesystems.
+
+        A cross-device move is a copy followed by a delete: slower, and not
+        atomic. The confirmation says so rather than letting a large project
+        appear to hang.
+        """
+        try:
+            return old.stat().st_dev != new.parent.stat().st_dev
+        except OSError:
+            return False
+
+    def relocate_project(self, old: Path, new: Path) -> str | None:
+        """Move the project directory itself, returning a reason on refusal.
+
+        Args:
+            old: The project directory to move.
+            new: Where it should end up.
+
+        Returns:
+            ``None`` on success, otherwise why nothing was moved.
+        """
+        reason = self.check_relocation(old, new)
+        if reason is not None:
+            return reason
+        try:
+            if new.exists():
+                # shutil.move would otherwise nest the source inside it.
+                new.rmdir()
+            shutil.move(str(old), str(new))
+        except (OSError, shutil.Error) as exc:
+            return f"could not move the project directory: {exc}"
+        self._write_log(
+            {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "action": "move_project",
+                "old": str(old),
+                "new": str(new),
+            }
+        )
+        return None
+
+    # --- executing -------------------------------------------------------
+
+    def move(
+        self, plans: dict[str, MovePlan], *, dry_run: bool = False
+    ) -> dict[str, MoveResult]:
+        """Execute every plan, recording the outcome in the op-log.
+
+        Args:
+            plans: The plans produced by :meth:`plan`.
+            dry_run: If True, report what would happen and change nothing.
+
+        Returns:
+            A mapping of harness name to :class:`MoveResult`.
+        """
+        results: dict[str, MoveResult] = {}
+        for name, plan in plans.items():
+            adapter = self._adapters.get(name)
+            if adapter is None:
+                results[name] = _no_move_adapter(name, dry_run=dry_run)
+                continue
+            try:
+                results[name] = adapter.move(plan, dry_run=dry_run)
+            except Exception as exc:  # noqa: BLE001 - one harness must not abort the rest
+                results[name] = MoveResult(
+                    dry_run=dry_run,
+                    skipped={Path(f"<{name}>"): f"move failed: {exc!r}"},
+                )
+        if not dry_run and plans:
+            self._log_move(plans, results)
+        return results
+
+    def _log_move(
+        self, plans: dict[str, MovePlan], results: dict[str, MoveResult]
+    ) -> None:
+        """Append one record describing a completed move.
+
+        Both endpoints are recorded, because that is what makes the operation
+        reversible: running the inverse move restores the previous state, and
+        this log is where the previous path can still be read afterwards.
+        """
+        any_plan = next(iter(plans.values()))
+        self._write_log(
+            {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "action": "move_sessions",
+                "old": str(any_plan.old),
+                "new": str(any_plan.new),
+                "harnesses": {
+                    name: {
+                        "rewritten": [str(p) for p in result.rewritten],
+                        "moved": [[str(a), str(b)] for a, b in result.moved],
+                        "fields_updated": result.fields_updated,
+                        "skipped": {str(k): v for k, v in result.skipped.items()},
+                        "note": result.note,
+                    }
+                    for name, result in results.items()
+                },
+            }
+        )
+
+
+def move_summary(results: dict[str, MoveResult]) -> str:
+    """Summarize a whole move in one line, per harness.
+
+    Args:
+        results: The per-harness results.
+
+    Returns:
+        A summary such as ``"claude: 12 file(s) re-pointed · 1 relocated"``, or a
+        statement that nothing happened.
+    """
+    parts = [
+        f"{name}: {result.summary()}"
+        for name, result in results.items()
+        if not (result.summary() == "nothing to move")
+    ]
+    return " · ".join(parts) if parts else "nothing to move"

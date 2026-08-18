@@ -4,6 +4,8 @@ Commands:
 
 * bare ``sx``      — launch the interactive TUI.
 * ``sx list``      — list discovered sessions, grouped by harness then project.
+* ``sx move``      — re-point a project's sessions at a new directory (and,
+  with ``--relocate``, move the project directory itself first).
 * ``sx harnesses`` — show every known harness and its status.
 * ``sx version``   — show the installed version and check GitHub for a newer one.
 * ``sx update``    — show (or run) the upgrade command when a newer release exists.
@@ -18,11 +20,13 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from pathlib import Path
 
 from sx import __version__
 from sx import update as update_mod
 from sx.model import Capability, Session
 from sx.registry import build_registry
+from sx.service import MoveService, move_summary
 from sx.util import human_size
 
 
@@ -154,6 +158,136 @@ def cmd_harnesses(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_move_plan(plans: dict, results: dict, adapters: dict) -> tuple[int, int, int]:
+    """Print the per-harness plan and return ``(files, fields, relocations)``."""
+    files = fields = moves = 0
+    for name, plan in plans.items():
+        result = results[name]
+        adapter = adapters.get(name)
+        label = adapter.display if adapter else name
+        print(f"\n  {label} ({len(plan.sessions)} session(s))")
+        for path in result.rewritten:
+            print(f"    • re-point {path}")
+        for src, dst in result.moved:
+            print(f"    • move  {src}")
+            print(f"            → {dst}")
+        if result.note:
+            print(f"    • {result.note}")
+        if plan.live:
+            print(
+                f"    ● {len(plan.live)} live session(s) — rewriting while the "
+                "harness is writing risks losing those turns"
+            )
+        for path, reason in result.refused.items():
+            print(f"    ✗ {path} — {reason}")
+        files += len(result.rewritten)
+        fields += result.fields_updated
+        moves += len(result.moved)
+    return files, fields, moves
+
+
+def _confirm_move(*, strict: bool) -> bool:
+    """Ask for confirmation on a TTY, refusing outright when there is none.
+
+    Args:
+        strict: Require the phrase ``MOVE`` rather than a simple yes.
+
+    Returns:
+        True if the user confirmed.
+    """
+    if not sys.stdin.isatty():
+        print(
+            "Refusing to proceed without confirmation: not an interactive "
+            "terminal. Re-run with --yes.",
+            file=sys.stderr,
+        )
+        return False
+    try:
+        if strict:
+            return input('\nType "MOVE" to proceed: ').strip() == "MOVE"
+        return input("\nProceed? [y/N] ").strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
+def cmd_move(args: argparse.Namespace) -> int:
+    """Handle ``sx move``: re-point a project's sessions at a new directory.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Process exit code; non-zero when nothing was moved.
+    """
+    old = Path(args.source).expanduser()
+    new = Path(args.destination).expanduser()
+    for label, path in (("--from", old), ("--to", new)):
+        if not path.is_absolute():
+            print(f"{label} must be an absolute path: {path}", file=sys.stderr)
+            return 2
+    if old == new:
+        print("--from and --to are the same directory.", file=sys.stderr)
+        return 2
+
+    adapters, errors = build_registry()
+    _print_load_errors(errors)
+    by_name = {a.name: a for a in adapters}
+    service = MoveService(by_name)
+
+    if args.relocate:
+        reason = service.check_relocation(old, new)
+        if reason is not None:
+            print(f"The project directory cannot be moved: {reason}", file=sys.stderr)
+            return 1
+
+    plans = service.plan(old, new, include_config=args.claude_config)
+    if not plans and not args.relocate:
+        print(f"No harness has sessions at {old}.")
+        return 1
+
+    print(f"Re-point sessions\n  from {old}\n    to {new}")
+    if args.relocate:
+        print("\n  the project directory itself moves first")
+        if service.crosses_devices(old, new):
+            print("  crosses filesystems — copies, then deletes the original")
+
+    preview = service.move(plans, dry_run=True)
+    files, fields, moves = _print_move_plan(plans, preview, by_name)
+    print(
+        f"\nTotal: {files} file(s) re-pointed, {fields} recorded path(s) updated, "
+        f"{moves} relocation(s)"
+    )
+
+    if args.dry_run:
+        print("\nDry run — nothing was changed.")
+        return 0
+
+    live = sum(len(plan.live) for plan in plans.values())
+    if not args.yes and not _confirm_move(strict=bool(live or args.relocate)):
+        print("Canceled — nothing was changed.")
+        return 1
+
+    if args.relocate:
+        reason = service.relocate_project(old, new)
+        if reason is not None:
+            print(f"Nothing was moved — {reason}", file=sys.stderr)
+            return 1
+        print(f"Moved {old} → {new}")
+
+    plans = service.plan(old, new, include_config=args.claude_config)
+    results = service.move(plans)
+    print(move_summary(results))
+    if service.last_log_error:
+        print(
+            f"⚠ the move happened but was NOT logged — {service.last_log_error}",
+            file=sys.stderr,
+        )
+    if results and all(result.failed for result in results.values()):
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the argument parser for the ``sx`` command."""
     parser = argparse.ArgumentParser(
@@ -174,6 +308,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only list sessions from this harness (e.g. claude, codex, gemini).",
     )
     p_list.set_defaults(func=cmd_list)
+
+    p_move = sub.add_parser(
+        "move",
+        help="Re-point a project's sessions at a new directory.",
+        description=(
+            "Tell every harness that a project now lives somewhere else. Use "
+            "--relocate when the directory has not been moved yet and sx should "
+            "move it too. Reversible: run the inverse move to undo."
+        ),
+    )
+    p_move.add_argument(
+        "--from", dest="source", required=True, metavar="PATH",
+        help="The project directory the sessions currently point at.",
+    )
+    p_move.add_argument(
+        "--to", dest="destination", required=True, metavar="PATH",
+        help="The project directory they should point at instead.",
+    )
+    p_move.add_argument(
+        "--relocate", action="store_true",
+        help="Move the project directory itself first, then re-point the sessions.",
+    )
+    p_move.add_argument(
+        "--dry-run", action="store_true",
+        help="Show exactly what would change and stop.",
+    )
+    p_move.add_argument(
+        "--claude-config", action="store_true",
+        help=(
+            "Also re-point Claude's own project state (~/.claude.json trust and "
+            "allowedTools, and ~/.claude/history.jsonl)."
+        ),
+    )
+    p_move.add_argument(
+        "--yes", action="store_true", help="Skip the interactive confirmation."
+    )
+    p_move.set_defaults(func=cmd_move)
 
     p_harnesses = sub.add_parser("harnesses", help="Show all known harnesses and status.")
     p_harnesses.set_defaults(func=cmd_harnesses)

@@ -42,12 +42,14 @@ class Capability(enum.Flag):
         BROWSE: Sessions can be discovered and their transcripts loaded.
         ORPHANS: The adapter can detect orphaned folders/files.
         DELETE: Sessions and orphans can be deleted.
+        MOVE: Sessions can be re-pointed at a new project directory.
     """
 
     NONE = 0
     BROWSE = enum.auto()
     ORPHANS = enum.auto()
     DELETE = enum.auto()
+    MOVE = enum.auto()
 
 
 @dataclass(slots=True)
@@ -209,3 +211,105 @@ class DeleteResult:
         if self.refused:
             bits.append(f"{len(self.refused)} refused")
         return " · ".join(bits) if bits else "nothing to remove"
+
+
+@dataclass(slots=True)
+class MovePlan:
+    """What re-pointing one harness at a new project directory would involve.
+
+    A plan is produced before anything is touched, so the confirmation can state
+    the full extent of the work — including the parts that will be refused.
+
+    Attributes:
+        harness: Adapter that produced this plan.
+        old: The project directory being moved away from.
+        new: The project directory being moved to.
+        sessions: Sessions the move applies to.
+        rewrites: Files whose recorded project path will be rewritten in place.
+        relocations: ``(source, destination)`` pairs to be moved on disk.
+        live: Sessions written within the active window; rewriting these races
+            the harness, so they are called out and gated behind a typed phrase.
+        blocked: Mapping of path -> reason for work that cannot proceed (a name
+            collision at the destination, a target outside the store roots).
+        note: Human-readable detail about non-file work, such as database rows.
+        include_config: Also re-point project state the harness keeps outside its
+            session store. Honored only by adapters that have such state (today,
+            Claude's ``~/.claude.json`` and ``~/.claude/history.jsonl``); opt-in,
+            because those files belong to a harness that may be running.
+    """
+
+    harness: str
+    old: Path
+    new: Path
+    sessions: list[Session] = field(default_factory=list)
+    rewrites: list[Path] = field(default_factory=list)
+    relocations: list[tuple[Path, Path]] = field(default_factory=list)
+    live: list[Session] = field(default_factory=list)
+    blocked: dict[Path, str] = field(default_factory=dict)
+    note: str | None = None
+    include_config: bool = False
+
+    @property
+    def empty(self) -> bool:
+        """True if this harness has nothing to do for the move."""
+        return not (self.rewrites or self.relocations or self.blocked or self.note)
+
+
+@dataclass(slots=True)
+class MoveResult:
+    """Outcome of re-pointing one harness at a new project directory.
+
+    Deliberately shaped like :class:`DeleteResult` so the preview and the
+    post-action message are rendered from the same accessors and cannot disagree
+    about what happened.
+
+    Attributes:
+        moved: ``(source, destination)`` pairs that were relocated.
+        rewritten: Files whose contents were rewritten.
+        fields_updated: How many recorded paths were changed in total.
+        skipped: Mapping of path -> reason for anything not acted on.
+        dry_run: True if this was a preview and nothing was changed.
+        note: Optional detail about non-file work (e.g. database rows).
+    """
+
+    moved: list[tuple[Path, Path]] = field(default_factory=list)
+    rewritten: list[Path] = field(default_factory=list)
+    fields_updated: int = 0
+    skipped: dict[Path, str] = field(default_factory=dict)
+    dry_run: bool = False
+    note: str | None = None
+
+    @property
+    def refused(self) -> dict[Path, str]:
+        """Targets actively refused or errored, excluding merely-absent ones."""
+        return {
+            path: reason
+            for path, reason in self.skipped.items()
+            if "does not exist" not in reason
+        }
+
+    @property
+    def failed(self) -> bool:
+        """True if nothing was changed and at least one target was refused."""
+        return (
+            not self.moved
+            and not self.rewritten
+            and not self.note
+            and bool(self.refused)
+        )
+
+    def summary(self) -> str:
+        """One-line human summary of what this result actually did."""
+        bits: list[str] = []
+        if self.rewritten:
+            bits.append(
+                f"{len(self.rewritten)} file(s) re-pointed"
+                f" · {self.fields_updated} path(s) updated"
+            )
+        if self.moved:
+            bits.append(f"{len(self.moved)} relocated")
+        if self.note:
+            bits.append(self.note)
+        if self.refused:
+            bits.append(f"{len(self.refused)} refused")
+        return " · ".join(bits) if bits else "nothing to move"

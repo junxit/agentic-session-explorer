@@ -22,6 +22,8 @@ from sx.model import (
     Capability,
     DeleteResult,
     Message,
+    MovePlan,
+    MoveResult,
     Orphan,
     Session,
 )
@@ -29,9 +31,11 @@ from sx.util import (
     dir_size,
     file_mtime,
     is_within,
+    is_under,
     iter_jsonl,
     mount_unavailable,
     read_first_line,
+    rewrite_jsonl,
 )
 
 
@@ -112,6 +116,57 @@ class HarnessAdapter(ABC):
             return None
         return file_mtime(path)
 
+    # --- move ------------------------------------------------------------
+
+    def sessions_for_project(
+        self,
+        project: Path,
+        sessions: list[Session] | None = None,
+    ) -> list[Session]:
+        """Return the sessions belonging to ``project`` or any directory inside it.
+
+        A session recorded in a subdirectory of the project (``/proj/docs``) is
+        part of that project and must travel with it, so containment rather than
+        equality decides membership.
+
+        Args:
+            project: The project directory to select for.
+            sessions: An already-discovered pool to filter; when omitted the
+                adapter discovers its own.
+
+        Returns:
+            The matching sessions.
+        """
+        pool = list(self.discover()) if sessions is None else sessions
+        return [
+            s
+            for s in pool
+            if s.harness == self.name and s.project_path and is_under(s.project_path, project)
+        ]
+
+    def plan_move(self, sessions: list[Session], old: Path, new: Path) -> MovePlan:
+        """Describe what re-pointing ``sessions`` from ``old`` to ``new`` would do.
+
+        The default plan is empty, so an adapter that does not implement moving
+        (every dormant harness) reports honestly that it has no work rather than
+        appearing to succeed.
+
+        Args:
+            sessions: Sessions selected for the move.
+            old: The project directory being moved away from.
+            new: The project directory being moved to.
+
+        Returns:
+            A :class:`MovePlan`.
+        """
+        return MovePlan(harness=self.name, old=old, new=new, sessions=list(sessions))
+
+    def move(self, plan: MovePlan, *, dry_run: bool = False) -> MoveResult:
+        """Carry out a :class:`MovePlan`. Default: do nothing."""
+        return MoveResult(dry_run=dry_run)
+
+    # --- delete ----------------------------------------------------------
+
     def delete(self, session: Session, *, dry_run: bool = False) -> DeleteResult:
         """Permanently delete a session's files (and correlated paths).
 
@@ -190,7 +245,9 @@ class JsonlFolderAdapter(HarnessAdapter):
     The default :attr:`capabilities` cover browse + orphan detection + delete.
     """
 
-    capabilities = Capability.BROWSE | Capability.ORPHANS | Capability.DELETE
+    capabilities = (
+        Capability.BROWSE | Capability.ORPHANS | Capability.DELETE | Capability.MOVE
+    )
 
     # --- discovery -------------------------------------------------------
 
@@ -275,3 +332,90 @@ class JsonlFolderAdapter(HarnessAdapter):
             if msg is not None:
                 messages.append(msg)
         return messages
+
+    # --- move ------------------------------------------------------------
+
+    def repoint_record(self, obj: dict, old: Path, new: Path) -> dict | None:
+        """Return ``obj`` with its recorded project path re-pointed, or ``None``.
+
+        This is the one place a harness declares *which field* holds the working
+        directory. Only that structural field may be touched: free text elsewhere
+        in a record (tool output, a pasted diff, the user's own prose) is
+        historical record, and rewriting paths inside it would corrupt the
+        transcript rather than move it.
+
+        Args:
+            obj: One parsed transcript record.
+            old: The project directory being moved away from.
+            new: The project directory being moved to.
+
+        Returns:
+            A replacement record, or ``None`` to leave the line untouched.
+        """
+        return None
+
+    def plan_move(self, sessions: list[Session], old: Path, new: Path) -> MovePlan:
+        """Plan a move as an in-place rewrite of each session's own files.
+
+        Harnesses whose files also have to be relocated (their location encodes
+        the project path) extend this.
+
+        Args:
+            sessions: Sessions selected for the move.
+            old: The project directory being moved away from.
+            new: The project directory being moved to.
+
+        Returns:
+            A :class:`MovePlan` listing the files to rewrite.
+        """
+        plan = MovePlan(harness=self.name, old=old, new=new, sessions=list(sessions))
+        roots = self.store_roots()
+        seen: set[Path] = set()
+        for session in sessions:
+            for path in session.paths:
+                if path in seen:
+                    continue
+                seen.add(path)
+                if not path.exists():
+                    continue
+                if not is_within(path, roots):
+                    plan.blocked[path] = "outside store root (refused)"
+                    continue
+                plan.rewrites.append(path)
+        return plan
+
+    def move(self, plan: MovePlan, *, dry_run: bool = False) -> MoveResult:
+        """Rewrite every file in ``plan``, re-pointing its recorded directory.
+
+        Args:
+            plan: The plan produced by :meth:`plan_move`.
+            dry_run: If True, count what would change without writing.
+
+        Returns:
+            A :class:`MoveResult`.
+        """
+        result = MoveResult(dry_run=dry_run)
+        result.skipped.update(plan.blocked)
+        self._rewrite_all(plan, result, dry_run=dry_run)
+        return result
+
+    def _rewrite_all(self, plan: MovePlan, result: MoveResult, *, dry_run: bool) -> None:
+        """Apply :meth:`repoint_record` to every file in ``plan.rewrites``.
+
+        Args:
+            plan: The plan being executed.
+            result: The result to record outcomes in (mutated in place).
+            dry_run: If True, count without writing.
+        """
+
+        def transform(obj: dict) -> dict | None:
+            return self.repoint_record(obj, plan.old, plan.new)
+
+        for path in plan.rewrites:
+            changed, error = rewrite_jsonl(path, transform, dry_run=dry_run)
+            if error is not None:
+                result.skipped[path] = error
+                continue
+            if changed:
+                result.rewritten.append(path)
+                result.fields_updated += changed

@@ -1,11 +1,25 @@
 from __future__ import annotations
 
+import json
 import re
+import shutil
 from pathlib import Path
 from typing import Iterator
 
-from ..model import Message, Orphan, OrphanKind, Role, Session
-from ..util import dir_size, home, human_size, iter_jsonl, mount_unavailable, parse_ts
+from ..model import Message, MovePlan, MoveResult, Orphan, OrphanKind, Role, Session
+from ..util import (
+    dir_size,
+    home,
+    human_size,
+    is_under,
+    is_within,
+    iter_jsonl,
+    mount_unavailable,
+    parse_ts,
+    repoint,
+    rewrite_jsonl,
+    write_text_atomic,
+)
 from .base import JsonlFolderAdapter
 
 # Slash-command / local-command wrappers that can lead a Claude user message
@@ -66,6 +80,27 @@ def _clean_title_text(text: str) -> str:
     cleaned = _STRAY_TAG_RE.sub(" ", cleaned)
     cleaned = " ".join(cleaned.split())
     return cleaned
+
+
+def encode_project_dir(path: str | Path) -> str:
+    """Encode an absolute project directory as Claude's project folder name.
+
+    Claude replaces every character outside ``[A-Za-z0-9]`` with a hyphen, so
+    ``/Users/a/.extra/git_clones`` becomes ``-Users-a--extra-git-clones``. The
+    rule was confirmed against every project folder on the development machine
+    (37 exact matches; the 3 that differed hold sessions whose directory was
+    itself renamed, and 2 could not be read).
+
+    Encoding is one-way, which is exactly what a move needs: the destination
+    folder name is always computable, and nothing ever has to be decoded.
+
+    Args:
+        path: An absolute project directory.
+
+    Returns:
+        The folder name Claude would use for it.
+    """
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
 def _decode_folder(name: str) -> str:
@@ -387,15 +422,24 @@ class ClaudeAdapter(JsonlFolderAdapter):
         Args:
             session: The session to inspect.
 
+        The session's own sidecar directory — ``<session-id>/`` sitting beside
+        ``<session-id>.jsonl`` and holding its sub-agent transcripts and tool
+        results — is included as well. It was previously missed entirely, so
+        deleting a session left that directory behind as an orphan the cleanup
+        screen could not attribute to anything.
+
         Returns:
             A list of matching auxiliary paths (commonly non-empty: on the
             sampled machine ``file-history/`` keys entries by session id).
         """
         sid = session.session_id
-        if not sid or not _UUID_RE.match(sid):
-            return []
-        base = home() / ".claude"
         matches: list[Path] = []
+        sidecar = self.session_sidecar(session)
+        if sidecar is not None:
+            matches.append(sidecar)
+        if not sid or not _UUID_RE.match(sid):
+            return matches
+        base = home() / ".claude"
         for sub in _CASCADE_DIRS:
             directory = base / sub
             if not directory.is_dir():
@@ -507,3 +551,369 @@ class ClaudeAdapter(JsonlFolderAdapter):
                     )
                 )
         return orphans
+
+    # --- move ------------------------------------------------------------
+
+    def _projects_root(self) -> Path:
+        """Return the primary session store (``~/.claude/projects``)."""
+        return home() / ".claude" / "projects"
+
+    def session_sidecar(self, session: Session) -> Path | None:
+        """Return the ``<session-id>/`` directory beside a transcript, if present.
+
+        Claude keeps a session's sub-agent transcripts and tool results in a
+        directory named for the session id, next to its ``.jsonl``. It has to
+        travel with the transcript on a move, and go with it on a delete.
+
+        Args:
+            session: The session to inspect.
+
+        Returns:
+            The sidecar directory, or ``None`` if there is none.
+        """
+        path = session.primary_path
+        if path is None:
+            return None
+        sidecar = path.parent / path.stem
+        return sidecar if sidecar.is_dir() else None
+
+    def repoint_record(self, obj: dict, old: Path, new: Path) -> dict | None:
+        """Re-point a record's ``cwd`` field, leaving everything else alone.
+
+        Claude stamps ``cwd`` on roughly three quarters of a transcript's lines,
+        and a single session may carry several — sampling the development machine
+        found files holding five or more distinct working directories, all
+        subdirectories of one project. Re-pointing therefore covers the project
+        directory and anything beneath it, and touches no other field: tool
+        output and pasted text mentioning the old path are historical record.
+
+        Args:
+            obj: One parsed transcript record.
+            old: The project directory being moved away from.
+            new: The project directory being moved to.
+
+        Returns:
+            A replacement record, or ``None`` to leave the line untouched.
+        """
+        updated = repoint(obj.get("cwd", ""), old, new)
+        if updated is None:
+            return None
+        replacement = dict(obj)
+        replacement["cwd"] = updated
+        return replacement
+
+    @staticmethod
+    def _folder_project(folder: Path, candidates: list[str]) -> str | None:
+        """Return the project directory a store folder is named for.
+
+        Folder names are a lossy encoding, so they are never decoded. Instead
+        each candidate directory is *encoded* and compared with the folder name,
+        which is exact.
+
+        Args:
+            folder: A folder directly under ``~/.claude/projects``.
+            candidates: Directories that might have produced the folder name.
+
+        Returns:
+            The matching candidate, or ``None`` when the folder is named for some
+            other directory (a project that was renamed after the folder was
+            created, for instance).
+        """
+        for candidate in candidates:
+            if candidate and encode_project_dir(candidate) == folder.name:
+                return candidate
+        return None
+
+    def plan_move(self, sessions: list[Session], old: Path, new: Path) -> MovePlan:
+        """Plan the rewrite *and* the relocation Claude's layout requires.
+
+        The store encodes the project directory in the folder name, so a move is
+        two operations: re-point every ``cwd`` inside the transcripts, then move
+        the files to the folder the new directory encodes to.
+
+        A folder is relocated whole whenever its name matches the directory it
+        holds — that carries the project's ``memory/`` directory and every
+        session's sidecar without enumerating them. Sessions that sit in a folder
+        named for some other directory are relocated individually, transcript and
+        sidecar together, so nothing is left stranded.
+
+        Args:
+            sessions: Sessions selected for the move.
+            old: The project directory being moved away from.
+            new: The project directory being moved to.
+
+        Returns:
+            A :class:`MovePlan` covering rewrites, relocations and refusals.
+        """
+        plan = super().plan_move(sessions, old, new)
+        root = self._projects_root()
+        roots = self.store_roots()
+
+        by_folder: dict[Path, list[Session]] = {}
+        for session in sessions:
+            path = session.primary_path
+            if path is not None:
+                by_folder.setdefault(path.parent, []).append(session)
+
+        strays = 0
+        for folder, folder_sessions in sorted(by_folder.items()):
+            if folder.parent != root:
+                continue  # nested or unfamiliar layout — rewrite only
+            candidates = [str(old)] + [
+                s.project_path for s in folder_sessions if s.project_path
+            ]
+            implied = self._folder_project(folder, candidates)
+            if implied is not None and is_under(implied, old):
+                target = repoint(implied, old, new)
+                self._plan_relocation(folder, root / encode_project_dir(target), plan, roots)
+                continue
+            for session in folder_sessions:
+                strays += self._plan_session_relocation(session, folder, plan, roots)
+
+        if strays:
+            plan.note = (
+                f"{strays} session(s) live in a folder named for another "
+                "directory and move individually"
+            )
+        return plan
+
+    def _plan_session_relocation(
+        self,
+        session: Session,
+        folder: Path,
+        plan: MovePlan,
+        roots: list[Path],
+    ) -> int:
+        """Plan moving one transcript (and its sidecar) into the new folder.
+
+        Args:
+            session: The session to relocate.
+            folder: The folder currently holding it.
+            plan: The plan to record into.
+            roots: The adapter's store roots, for the containment guard.
+
+        Returns:
+            ``1`` if a relocation was planned, ``0`` if the session is already in
+            the right place.
+        """
+        path = session.primary_path
+        target_dir = repoint(session.project_path or "", plan.old, plan.new)
+        if path is None or target_dir is None:
+            return 0
+        destination = self._projects_root() / encode_project_dir(target_dir)
+        if destination == folder:
+            return 0
+        self._plan_entry(path, destination / path.name, plan, roots)
+        sidecar = self.session_sidecar(session)
+        if sidecar is not None:
+            self._plan_entry(sidecar, destination / sidecar.name, plan, roots)
+        return 1
+
+    def _plan_relocation(
+        self, src: Path, dst: Path, plan: MovePlan, roots: list[Path]
+    ) -> None:
+        """Plan moving a whole project folder, merging when the target exists.
+
+        A destination folder already exists whenever Claude has been run at the
+        new path. Its entries are then merged one by one, and any name already
+        taken is refused rather than overwritten — a move must never destroy a
+        transcript that is already there.
+
+        Args:
+            src: The folder to move.
+            dst: Where it should end up.
+            plan: The plan to record into.
+            roots: The adapter's store roots, for the containment guard.
+        """
+        if src == dst:
+            return
+        if not dst.exists():
+            self._plan_entry(src, dst, plan, roots)
+            return
+        if not dst.is_dir():
+            plan.blocked[dst] = "destination exists and is not a directory (refused)"
+            return
+        try:
+            entries = sorted(src.iterdir())
+        except OSError as exc:
+            plan.blocked[src] = f"cannot read: {exc}"
+            return
+        for entry in entries:
+            self._plan_entry(entry, dst / entry.name, plan, roots)
+
+    @staticmethod
+    def _plan_entry(src: Path, dst: Path, plan: MovePlan, roots: list[Path]) -> None:
+        """Record one ``src -> dst`` relocation, or why it cannot happen."""
+        if not is_within(src, roots) or not is_within(dst, roots):
+            plan.blocked[src] = "outside store root (refused)"
+            return
+        if dst.exists():
+            plan.blocked[src] = f"already exists at destination: {dst} (refused)"
+            return
+        plan.relocations.append((src, dst))
+
+    def move(self, plan: MovePlan, *, dry_run: bool = False) -> MoveResult:
+        """Re-point the transcripts, then relocate them to the new folder.
+
+        Order matters: the rewrite runs first, while the planned paths still
+        exist where the plan says they do. Relocating first would invalidate
+        every one of them.
+
+        Args:
+            plan: The plan produced by :meth:`plan_move`.
+            dry_run: If True, report what would happen and change nothing.
+
+        Returns:
+            A :class:`MoveResult`.
+        """
+        result = MoveResult(dry_run=dry_run)
+        result.skipped.update(plan.blocked)
+        if plan.note:
+            result.note = plan.note
+        self._rewrite_all(plan, result, dry_run=dry_run)
+        for src, dst in plan.relocations:
+            self._relocate(src, dst, result, dry_run=dry_run)
+        if not dry_run:
+            self._prune_empty_folders(plan)
+        if plan.include_config:
+            self._repoint_config(plan, result, dry_run=dry_run)
+        return result
+
+    def _relocate(self, src: Path, dst: Path, result: MoveResult, *, dry_run: bool) -> None:
+        """Move one path, re-checking every guard at the moment of the move."""
+        roots = self.store_roots()
+        if not is_within(src, roots) or not is_within(dst, roots):
+            result.skipped[src] = "outside store root (refused)"
+            return
+        if not src.exists():
+            result.skipped[src] = "does not exist"
+            return
+        if dst.exists():
+            result.skipped[src] = f"already exists at destination: {dst} (refused)"
+            return
+        if dry_run:
+            result.moved.append((src, dst))
+            return
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+        except (OSError, shutil.Error) as exc:
+            result.skipped[src] = f"move failed: {exc}"
+            return
+        result.moved.append((src, dst))
+
+    def _prune_empty_folders(self, plan: MovePlan) -> None:
+        """Remove project folders left completely empty by a merge.
+
+        Only a directly-held project folder is considered, and only when it has
+        no entries at all — ``rmdir`` rather than a recursive remove, so anything
+        the move did not relocate keeps the folder alive.
+        """
+        root = self._projects_root()
+        for src, _ in plan.relocations:
+            folder = src.parent
+            if folder.parent != root or not folder.is_dir():
+                continue
+            try:
+                next(folder.iterdir())
+            except StopIteration:
+                try:
+                    folder.rmdir()
+                except OSError:
+                    pass
+            except OSError:
+                continue
+
+    # --- optional: Claude's own project state ----------------------------
+
+    def _repoint_config(self, plan: MovePlan, result: MoveResult, *, dry_run: bool) -> None:
+        """Re-point the project state Claude keeps outside its session store.
+
+        Two files, both named explicitly rather than matched by pattern, because
+        they sit outside :meth:`store_roots` and the containment guard therefore
+        cannot vet them:
+
+        * ``~/.claude.json`` — the ``projects`` map holding the trust decision,
+          ``allowedTools`` and MCP servers for each directory. Without this a
+          moved project is treated as brand new and its permissions are lost.
+        * ``~/.claude/history.jsonl`` — the prompt history, tagged per project.
+
+        Both belong to a harness that may be running, so each write re-checks
+        that the file has not changed since it was read and abandons the update
+        if it has.
+
+        Args:
+            plan: The plan being executed.
+            result: The result to record outcomes in.
+            dry_run: If True, count what would change and write nothing.
+        """
+        entries = self._repoint_settings(plan, result, dry_run=dry_run)
+        entries += self._repoint_history(plan, result, dry_run=dry_run)
+        if entries:
+            verb = "would re-point" if dry_run else "re-pointed"
+            detail = f"{verb} {entries} Claude config entry(s)"
+            result.note = f"{result.note} · {detail}" if result.note else detail
+
+    def _repoint_settings(self, plan: MovePlan, result: MoveResult, *, dry_run: bool) -> int:
+        """Re-key the ``projects`` map in ``~/.claude.json``. Returns entries changed."""
+        config = home() / ".claude.json"
+        if not config.is_file():
+            return 0
+        try:
+            before = config.stat()
+            data = json.loads(config.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError, UnicodeError) as exc:
+            result.skipped[config] = f"cannot read: {exc}"
+            return 0
+        projects = data.get("projects") if isinstance(data, dict) else None
+        if not isinstance(projects, dict):
+            return 0
+
+        renames: dict[str, str] = {}
+        for key in list(projects):
+            target = repoint(key, plan.old, plan.new) if isinstance(key, str) else None
+            if target is None:
+                continue
+            if target in projects:
+                result.skipped[config] = (
+                    f"{target} already has Claude settings (refused)"
+                )
+                continue
+            renames[key] = target
+        if not renames:
+            return 0
+        if dry_run:
+            return len(renames)
+
+        for source_key, target_key in renames.items():
+            projects[target_key] = projects.pop(source_key)
+        error = write_text_atomic(config, json.dumps(data, indent=2), expect=before)
+        if error is not None:
+            result.skipped[config] = error
+            return 0
+        result.rewritten.append(config)
+        result.fields_updated += len(renames)
+        return len(renames)
+
+    def _repoint_history(self, plan: MovePlan, result: MoveResult, *, dry_run: bool) -> int:
+        """Re-point the ``project`` field in ``~/.claude/history.jsonl``."""
+        history = home() / ".claude" / "history.jsonl"
+        if not history.is_file():
+            return 0
+
+        def transform(obj: dict) -> dict | None:
+            updated = repoint(obj.get("project", ""), plan.old, plan.new)
+            if updated is None:
+                return None
+            replacement = dict(obj)
+            replacement["project"] = updated
+            return replacement
+
+        changed, error = rewrite_jsonl(history, transform, dry_run=dry_run)
+        if error is not None:
+            result.skipped[history] = error
+            return 0
+        if changed and not dry_run:
+            result.rewritten.append(history)
+            result.fields_updated += changed
+        return changed

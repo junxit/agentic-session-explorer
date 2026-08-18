@@ -34,12 +34,14 @@ from ..model import (
     Capability,
     DeleteResult,
     Message,
+    MovePlan,
+    MoveResult,
     Orphan,
     OrphanKind,
     Role,
     Session,
 )
-from ..util import home, is_within
+from ..util import home, is_under, is_within, repoint
 from .base import HarnessAdapter
 
 # Tables (besides ``session`` itself) that carry a ``session_id`` column and must
@@ -47,6 +49,19 @@ from .base import HarnessAdapter
 # last and separately (it is keyed by ``id``, not ``session_id``). This is a
 # fixed constant — never user input — so interpolating it into SQL is safe.
 _CASCADE_TABLES = ("part", "message", "todo", "session_share", "session_message")
+
+# Columns holding a filesystem path that a move must re-point, as
+# ``(table, key column, path column)``. Like ``_CASCADE_TABLES`` these are fixed
+# constants, never user input, so interpolating them into SQL is safe.
+#
+# ``project.worktree`` is deliberately absent: a project row is shared by every
+# session beneath it, so rewriting it would silently re-point conversations that
+# were never part of the move. A move that would have matched it says so instead.
+_REPOINTABLE_COLUMNS = (
+    ("session", "id", "directory"),
+    ("session", "id", "path"),
+    ("workspace", "id", "directory"),
+)
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -117,7 +132,9 @@ class OpencodeAdapter(HarnessAdapter):
 
     name = "opencode"
     display = "opencode"
-    capabilities = Capability.BROWSE | Capability.ORPHANS | Capability.DELETE
+    capabilities = (
+        Capability.BROWSE | Capability.ORPHANS | Capability.DELETE | Capability.MOVE
+    )
 
     # --- paths -----------------------------------------------------------
 
@@ -526,3 +543,149 @@ class OpencodeAdapter(HarnessAdapter):
         finally:
             con.close()
         return total
+
+    # --- move (overridden: rows, not files) ------------------------------
+
+    def _pending_repoints(
+        self, con: sqlite3.Connection, old: Path, new: Path
+    ) -> list[tuple[str, str, str, str, str]]:
+        """Return the row updates a move would perform.
+
+        Filtering happens in Python rather than SQL so it uses the same
+        boundary-aware :func:`~sx.util.repoint` as every other harness — a SQL
+        ``LIKE 'old%'`` would also match a sibling directory whose name merely
+        starts with the project's.
+
+        Args:
+            con: An open connection to the opencode database.
+            old: The project directory being moved away from.
+            new: The project directory being moved to.
+
+        Returns:
+            ``(table, key column, key, path column, new value)`` tuples.
+        """
+        pending: list[tuple[str, str, str, str, str]] = []
+        for table, key_column, path_column in _REPOINTABLE_COLUMNS:
+            try:
+                rows = con.execute(
+                    f"SELECT {key_column}, {path_column} FROM {table}"
+                ).fetchall()
+            except sqlite3.Error:
+                continue  # older schema without this table or column
+            for row in rows:
+                current = row[path_column]
+                target = repoint(current, old, new) if isinstance(current, str) else None
+                if target is not None:
+                    pending.append(
+                        (table, key_column, row[key_column], path_column, target)
+                    )
+        return pending
+
+    def _shared_projects(self, con: sqlite3.Connection, old: Path) -> int:
+        """Count ``project`` rows whose worktree is inside the moved directory."""
+        try:
+            rows = con.execute("SELECT worktree FROM project").fetchall()
+        except sqlite3.Error:
+            return 0
+        return sum(
+            1
+            for row in rows
+            if isinstance(row["worktree"], str) and is_under(row["worktree"], old)
+        )
+
+    def plan_move(self, sessions: list[Session], old: Path, new: Path) -> MovePlan:
+        """Plan a move as a set of column updates inside the shared database.
+
+        Nothing on disk moves: opencode keeps every session as rows in one
+        database, and the per-session sidecar is named by session id rather than
+        by project.
+
+        Args:
+            sessions: Sessions selected for the move.
+            old: The project directory being moved away from.
+            new: The project directory being moved to.
+
+        Returns:
+            A :class:`MovePlan` whose ``note`` states the row count.
+        """
+        plan = MovePlan(harness=self.name, old=old, new=new, sessions=list(sessions))
+        con = self._connect_ro()
+        if con is None:
+            if sessions:
+                plan.blocked[self._db_path()] = "database unreadable (refused)"
+            return plan
+        try:
+            pending = self._pending_repoints(con, old, new)
+            shared = self._shared_projects(con, old)
+        finally:
+            con.close()
+
+        if pending:
+            plan.note = f"{len(pending)} database column(s) to re-point"
+        if shared:
+            detail = (
+                f"{shared} shared project row(s) left untouched — a project is "
+                "shared by other sessions"
+            )
+            plan.note = f"{plan.note} · {detail}" if plan.note else detail
+        return plan
+
+    def move(self, plan: MovePlan, *, dry_run: bool = False) -> MoveResult:
+        """Apply every planned column update in one transaction.
+
+        Args:
+            plan: The plan produced by :meth:`plan_move`.
+            dry_run: If True, report what would change and write nothing.
+
+        Returns:
+            A :class:`MoveResult` whose ``note`` records the row work.
+        """
+        result = MoveResult(dry_run=dry_run)
+        result.skipped.update(plan.blocked)
+
+        if dry_run:
+            result.note = (
+                plan.note.replace("to re-point", "would be re-pointed", 1)
+                if plan.note
+                else None
+            )
+            return result
+
+        db = self._db_path()
+        if not db.exists():
+            result.note = "database not found; nothing re-pointed"
+            return result
+        if not is_within(db, self.store_roots()):
+            result.skipped[db] = "database outside store root (refused)"
+            return result
+
+        con: sqlite3.Connection | None = None
+        try:
+            con = sqlite3.connect(str(db), timeout=5.0)
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA busy_timeout=2000")
+            pending = self._pending_repoints(con, plan.old, plan.new)
+            if not pending:
+                return result
+            con.execute("BEGIN")
+            for table, key_column, key, path_column, value in pending:
+                con.execute(
+                    f"UPDATE {table} SET {path_column} = ? WHERE {key_column} = ?",
+                    (value, key),
+                )
+            con.commit()
+        except sqlite3.Error as exc:
+            if con is not None:
+                try:
+                    con.rollback()
+                except sqlite3.Error:
+                    pass
+            result.skipped[db] = f"db update failed: {exc}"
+            return result
+        finally:
+            if con is not None:
+                con.close()
+
+        result.fields_updated += len(pending)
+        result.note = f"re-pointed {len(pending)} database column(s)"
+        return result

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Iterator
 
-from ..model import Message, Orphan, OrphanKind, Role, Session
+from ..model import Message, MovePlan, MoveResult, Orphan, OrphanKind, Role, Session
 from ..util import (
     dir_size,
     home,
+    is_within,
     iter_jsonl,
     parse_ts,
     read_first_line,
+    repoint,
+    write_text_atomic,
 )
 from .base import JsonlFolderAdapter
 
@@ -382,3 +386,138 @@ class GeminiAdapter(JsonlFolderAdapter):
                 )
             )
         return orphans
+
+    # --- move ------------------------------------------------------------
+
+    def _registry(self) -> Path:
+        """Return ``~/.gemini/projects.json``, the path -> directory-name map."""
+        return home() / ".gemini" / "projects.json"
+
+    def plan_move(self, sessions: list[Session], old: Path, new: Path) -> MovePlan:
+        """Plan a move as an update of Gemini's two path registries.
+
+        Gemini never records the project directory inside a chat file, so no
+        transcript is rewritten. The directory holding a session is named by an
+        opaque key that Gemini itself allocates, so it is not renamed either.
+        What has to change is the pair of places the path is actually written:
+        the ``.project_root`` marker beside the chats, and the ``projects.json``
+        map Gemini uses to find that directory again.
+
+        Args:
+            sessions: Sessions selected for the move.
+            old: The project directory being moved away from.
+            new: The project directory being moved to.
+
+        Returns:
+            A :class:`MovePlan` listing the registry files to update.
+        """
+        plan = MovePlan(harness=self.name, old=old, new=new, sessions=list(sessions))
+        roots = self.store_roots()
+        seen: set[Path] = set()
+        for session in sessions:
+            path = session.primary_path
+            if path is None:
+                continue
+            marker = self._project_root_marker(path)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            if not marker.is_file():
+                plan.blocked[marker] = "does not exist"
+                continue
+            if not is_within(marker, roots):
+                plan.blocked[marker] = "outside store root (refused)"
+                continue
+            plan.rewrites.append(marker)
+
+        registry = self._registry()
+        if plan.rewrites and registry.is_file() and is_within(registry, roots):
+            plan.rewrites.append(registry)
+        return plan
+
+    def move(self, plan: MovePlan, *, dry_run: bool = False) -> MoveResult:
+        """Update every ``.project_root`` marker, then the shared registry.
+
+        Args:
+            plan: The plan produced by :meth:`plan_move`.
+            dry_run: If True, report what would change and write nothing.
+
+        Returns:
+            A :class:`MoveResult`.
+        """
+        result = MoveResult(dry_run=dry_run)
+        result.skipped.update(plan.blocked)
+        registry = self._registry()
+        for path in plan.rewrites:
+            if path == registry:
+                self._repoint_registry(path, plan, result, dry_run=dry_run)
+            else:
+                self._repoint_marker(path, plan, result, dry_run=dry_run)
+        return result
+
+    @staticmethod
+    def _repoint_marker(
+        marker: Path, plan: MovePlan, result: MoveResult, *, dry_run: bool
+    ) -> None:
+        """Rewrite one ``.project_root`` marker, preserving its trailing bytes."""
+        try:
+            before = marker.stat()
+            text = marker.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            result.skipped[marker] = f"cannot read: {exc}"
+            return
+        body = text.strip()
+        updated = repoint(body, plan.old, plan.new)
+        if updated is None:
+            return
+        if dry_run:
+            result.rewritten.append(marker)
+            result.fields_updated += 1
+            return
+        trailer = text[len(text.rstrip()):]
+        error = write_text_atomic(marker, updated + trailer, expect=before)
+        if error is not None:
+            result.skipped[marker] = error
+            return
+        result.rewritten.append(marker)
+        result.fields_updated += 1
+
+    @staticmethod
+    def _repoint_registry(
+        registry: Path, plan: MovePlan, result: MoveResult, *, dry_run: bool
+    ) -> None:
+        """Re-key ``projects.json`` so Gemini finds the directory under its new path."""
+        try:
+            before = registry.stat()
+            data = json.loads(registry.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError, UnicodeError) as exc:
+            result.skipped[registry] = f"cannot read: {exc}"
+            return
+        projects = data.get("projects") if isinstance(data, dict) else None
+        if not isinstance(projects, dict):
+            return
+
+        renames: dict[str, str] = {}
+        for key in list(projects):
+            target = repoint(key, plan.old, plan.new) if isinstance(key, str) else None
+            if target is None:
+                continue
+            if target in projects:
+                result.skipped[registry] = f"{target} is already registered (refused)"
+                continue
+            renames[key] = target
+        if not renames:
+            return
+        if dry_run:
+            result.rewritten.append(registry)
+            result.fields_updated += len(renames)
+            return
+
+        for source_key, target_key in renames.items():
+            projects[target_key] = projects.pop(source_key)
+        error = write_text_atomic(registry, json.dumps(data, indent=2) + "\n", expect=before)
+        if error is not None:
+            result.skipped[registry] = error
+            return
+        result.rewritten.append(registry)
+        result.fields_updated += len(renames)

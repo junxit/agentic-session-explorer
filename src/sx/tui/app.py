@@ -1,19 +1,24 @@
 """The ``sx`` Textual application: a two-pane session browser with cleanup.
 
 Left pane: a tree of sessions, grouped by project / date / recency (cycle with
-``m``) and filterable (``/``). Installed-but-unsupported harnesses appear grayed.
+``b``) and filterable (``/``). Installed-but-unsupported harnesses appear grayed.
 Right pane: the selected session's transcript, scrollable, parsed lazily on a
 background thread.
 
-Destructive actions are deliberate and gated:
+Actions that change something on disk are deliberate and gated:
 
 * ``e`` exports the highlighted session to Markdown;
 * ``d`` permanently deletes it, after a preview modal (and, for live sessions,
   a typed confirmation); deletion can export first;
+* ``m`` re-points the highlighted session's project at a new directory — for
+  when the project has already been moved by hand;
+* ``M`` moves the project directory itself and then does the same;
 * ``o`` opens the orphan-cleanup screen.
 
-There is no undo — the guard rails are the preview, the typed confirmation, the
-store-root allowlist (in the adapter), and the append-only op-log.
+Deletion has no undo — the guard rails are the preview, the typed confirmation,
+the store-root allowlist (in the adapter), and the append-only op-log. A move is
+reversible: the same op-log records both endpoints, so the inverse move restores
+the previous state.
 """
 
 from __future__ import annotations
@@ -37,8 +42,8 @@ from sx.grouping import GroupMode, filter_sessions, group_sessions
 from sx.model import Capability, Orphan, Session
 from sx.registry import build_registry
 from sx.render import messages_to_text
-from sx.service import DeleteService
-from sx.tui.screens import ConfirmDeleteScreen, OrphanScreen
+from sx.service import DeleteService, MoveService, move_summary
+from sx.tui.screens import ConfirmDeleteScreen, MoveScreen, OrphanScreen
 from sx.util import human_size, sanitize_text
 
 _READY_STYLE = "bold green"
@@ -90,11 +95,13 @@ class SxApp(App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh_tree", "Refresh"),
-        Binding("m", "cycle_group", "Group"),
+        Binding("b", "cycle_group", "Group"),
         Binding("slash", "start_filter", "Filter"),
         Binding("o", "show_orphans", "Orphans"),
         Binding("e", "export_session", "Export"),
         Binding("d", "delete_session", "Delete"),
+        Binding("m", "move_sessions", "Move"),
+        Binding("M", "relocate_project", "Move dir", show=False),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("g", "scroll_top", "Top", show=False),
@@ -113,6 +120,7 @@ class SxApp(App):
         self._adapters_by_name: dict = {}
         self._sessions_by_harness: dict[str, list[Session]] = {}
         self._delete_service: DeleteService | None = None
+        self._move_service: MoveService | None = None
         self._group_mode = GroupMode.PROJECT
         self._filter = ""
         #: Short-lived cache of liveness badges, keyed by (harness, session id).
@@ -141,10 +149,15 @@ class SxApp(App):
         log.write(
             Text.from_markup(
                 "[bold]sx[/bold] — select a session to view its transcript.\n\n"
-                "[dim]↑/↓ move · enter open · m group · / filter · o orphans · "
-                "e export · d delete · q quit[/dim]"
+                "[dim]↑/↓ move · enter open · b group · / filter · o orphans · "
+                "e export · m move · M move dir · d delete · q quit[/dim]"
             )
         )
+        # Focus the tree explicitly. Textual otherwise focuses the first
+        # focusable widget, which is the filter Input — and it keeps receiving
+        # keys even though its CSS hides it, so every keybinding silently typed
+        # into an invisible box instead of firing.
+        self.query_one("#tree", Tree).focus()
         if self._check_updates:
             self._run_update_check()
 
@@ -176,6 +189,7 @@ class SxApp(App):
         adapters, errors = build_registry()
         self._adapters_by_name = {a.name: a for a in adapters}
         self._delete_service = DeleteService(self._adapters_by_name)
+        self._move_service = MoveService(self._adapters_by_name)
         self._load_errors = errors
         self._sessions_by_harness = {}
         for adapter in adapters:
@@ -487,6 +501,224 @@ class SxApp(App):
             )
         self._reload_data()
         self._populate_tree()
+
+    # --- move ------------------------------------------------------------
+
+    @staticmethod
+    def _toast_safe(text: str) -> str:
+        """Make untrusted text safe to pass to :meth:`notify`.
+
+        Notifications are rendered as markup and these strings embed paths read
+        off disk, so a directory containing square brackets would otherwise be
+        parsed as a style tag.
+        """
+        return sanitize_text(str(text)).replace("[", r"\[")
+
+    def _move_preview(
+        self,
+        old: Path,
+        destination: str,
+        *,
+        relocate: bool,
+        include_config: bool,
+    ) -> tuple[Text, bool, bool]:
+        """Render what moving ``old`` to ``destination`` would do.
+
+        Every harness is dry-run, so the preview states the real extent of the
+        work — including the parts that will be refused — rather than a guess.
+
+        Args:
+            old: The project directory the sessions currently point at.
+            destination: The candidate new directory, as typed.
+            relocate: Whether the project directory itself is being moved.
+            include_config: Whether to also re-point Claude's project settings.
+
+        Returns:
+            A ``(text, can_move, needs_phrase)`` triple for :class:`MoveScreen`.
+        """
+        service = self._move_service
+        if service is None:
+            return Text("Move service unavailable.", style="red"), False, False
+
+        new = Path(destination).expanduser()
+        if not new.is_absolute():
+            return Text("Destination must be an absolute path.", style="red"), False, False
+        if new == old:
+            return Text("That is the current location.", style="yellow"), False, False
+
+        text = Text()
+        if relocate:
+            reason = service.check_relocation(old, new)
+            if reason is not None:
+                text.append("The project directory cannot be moved:\n", style="bold red")
+                text.append(f"  {reason}\n", style="red")
+                return text, False, False
+            text.append("Move the project directory\n", style="bold")
+            text.append(f"  {old}\n   → {new}\n")
+            if service.crosses_devices(old, new):
+                text.append(
+                    "  crosses filesystems — copies, then deletes the original\n",
+                    style="yellow",
+                )
+            text.append("\n")
+        elif not new.exists():
+            text.append(f"note: {new} does not exist yet\n\n", style="yellow")
+
+        plans = service.plan(
+            old,
+            new,
+            sessions_by_harness=self._sessions_by_harness,
+            include_config=include_config,
+        )
+        if not plans:
+            text.append("No harness has sessions at this project path.", style="yellow")
+            return text, relocate, relocate
+
+        results = service.move(plans, dry_run=True)
+        live_total = 0
+        for name, plan in plans.items():
+            result = results[name]
+            adapter = self._adapters_by_name.get(name)
+            text.append(adapter.display if adapter else name, style="bold")
+            text.append(f"  ({len(plan.sessions)} session(s))\n", style="dim")
+            for path in result.rewritten:
+                text.append(f"  • re-point {path}\n")
+            for src, dst in result.moved:
+                text.append(f"  • move  {src}\n          → {dst}\n")
+            if result.note:
+                text.append(f"  • {result.note}\n", style="bold yellow")
+            if plan.live:
+                live_total += len(plan.live)
+                text.append(
+                    f"  ● {len(plan.live)} live session(s) — rewriting while the "
+                    "harness is writing risks losing those turns\n",
+                    style="bold red",
+                )
+            for path, reason in list(result.refused.items())[:5]:
+                text.append(f"  ✗ {path} — {reason}\n", style="red")
+            text.append("\n")
+
+        files = sum(len(r.rewritten) for r in results.values())
+        fields = sum(r.fields_updated for r in results.values())
+        moves = sum(len(r.moved) for r in results.values())
+        text.append(
+            f"Total: {files} file(s) re-pointed, {fields} recorded path(s) updated, "
+            f"{moves} relocation(s)",
+            style="bold",
+        )
+        has_work = any(r.rewritten or r.moved or r.note for r in results.values())
+        return text, (relocate or has_work), bool(live_total) or relocate
+
+    @work
+    async def action_move_sessions(self) -> None:
+        """Re-point the highlighted session's project at a directory you moved."""
+        await self._move_flow(relocate=False)
+
+    @work
+    async def action_relocate_project(self) -> None:
+        """Move the project directory itself, then re-point its sessions."""
+        await self._move_flow(relocate=True)
+
+    async def _move_flow(self, *, relocate: bool) -> None:
+        """Run the move dialog and carry out the confirmed operation.
+
+        For a relocation the directory is moved first: if that fails nothing else
+        is touched, whereas re-pointing first would leave every session aimed at
+        a directory that was never created.
+
+        Args:
+            relocate: True to move the project directory as well.
+        """
+        session = self._current_session()
+        if session is None:
+            self.notify("No session selected.", severity="warning")
+            return
+        service = self._move_service
+        if service is None:
+            self.notify("Move service unavailable.", severity="error")
+            return
+        if not session.project_path:
+            self.notify(
+                "This session has no known project directory.", severity="warning"
+            )
+            return
+
+        old = Path(session.project_path)
+
+        def preview(destination: str, include_config: bool):
+            return self._move_preview(
+                old, destination, relocate=relocate, include_config=include_config
+            )
+
+        screen = MoveScreen(
+            heading=(
+                "Move this project directory and re-point its sessions?"
+                if relocate
+                else "Re-point this project's sessions at a new directory?"
+            ),
+            old=str(old),
+            preview=preview,
+            can_config="claude" in self._adapters_by_name,
+        )
+        choice = await self.push_screen_wait(screen)
+        if choice is None:
+            return
+
+        new = Path(str(choice["new"])).expanduser()
+        include_config = bool(choice.get("include_config"))
+
+        if relocate:
+            reason = await asyncio.to_thread(service.relocate_project, old, new)
+            if reason is not None:
+                self.notify(
+                    f"Nothing was moved — {self._toast_safe(reason)}",
+                    severity="error",
+                    timeout=10,
+                )
+                return
+            self.notify(f"Moved {self._toast_safe(old)} → {self._toast_safe(new)}")
+
+        plans = service.plan(
+            old,
+            new,
+            sessions_by_harness=self._sessions_by_harness,
+            include_config=include_config,
+        )
+        results = service.move(plans)
+        self._report_move(results)
+        if service.last_log_error:
+            self.notify(
+                f"The move happened but was NOT logged — "
+                f"{self._toast_safe(service.last_log_error)}",
+                severity="warning",
+                timeout=10,
+            )
+        self._live_cache.clear()
+        self._reload_data()
+        self._populate_tree()
+
+    def _report_move(self, results: dict) -> None:
+        """Notify the outcome of a move, never overstating what happened."""
+        if not results:
+            self.notify("Nothing to re-point.", severity="warning")
+            return
+        if all(r.failed for r in results.values()):
+            reason = next(
+                (value for r in results.values() for value in r.refused.values()),
+                "unknown reason",
+            )
+            self.notify(
+                f"Nothing was re-pointed — {self._toast_safe(reason)}",
+                severity="error",
+                timeout=10,
+            )
+            return
+        refused = sum(len(r.refused) for r in results.values())
+        self.notify(
+            f"Moved · {self._toast_safe(move_summary(results))}",
+            severity="warning" if refused else "information",
+            timeout=10 if refused else 6,
+        )
 
     # --- orphans ---------------------------------------------------------
 
