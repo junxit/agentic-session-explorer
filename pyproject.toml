@@ -1,6 +1,6 @@
 [project]
 name = "sx"
-version = "0.5.1"
+version = "0.6.0"
 description = "Explore, archive, move, and safely delete the chat sessions AI coding agents (Claude Code, Codex, Gemini, and more) leave on your machine — all from one terminal TUI."
 readme = "README.md"
 requires-python = ">=3.13"

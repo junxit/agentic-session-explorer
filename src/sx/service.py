@@ -25,7 +25,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from sx.model import Capability, DeleteResult, MovePlan, MoveResult, Orphan, Session
+from sx.model import (
+    Capability,
+    DeleteResult,
+    MovePlan,
+    MoveResult,
+    Orphan,
+    ProjectLeftovers,
+    Session,
+)
 from sx.util import is_under
 
 #: A session modified within this many seconds is considered "live".
@@ -222,6 +230,157 @@ class DeleteService(_OperationService):
             result=result,
         )
         return result
+
+    # --- memory ----------------------------------------------------------
+
+    def preview_memory(self, memory) -> DeleteResult:
+        """Return a dry-run result for deleting one memory document."""
+        adapter = self._adapters.get("claude")
+        if adapter is None:
+            return _no_adapter("claude", dry_run=True)
+        return adapter.delete_paths([memory.path], dry_run=True)
+
+    def delete_memory(self, memory) -> DeleteResult:
+        """Permanently delete one memory document and record it in the op-log.
+
+        Memory is written to outlive its conversations, so its removal is logged
+        under its own action with the project it belonged to — a session delete
+        never produces one of these records.
+
+        Args:
+            memory: The :class:`~sx.memory.MemoryFile` to remove.
+
+        Returns:
+            A :class:`DeleteResult`.
+        """
+        adapter = self._adapters.get("claude")
+        if adapter is None:
+            return _no_adapter("claude", dry_run=False)
+        result = adapter.delete_paths([memory.path], dry_run=False)
+        self._log(
+            action="delete_memory",
+            harness="claude",
+            identifier=memory.origin_session_id or memory.name,
+            title=f"{memory.project_path or '(unknown)'} · {memory.name}",
+            result=result,
+        )
+        return result
+
+    # --- project-scoped state --------------------------------------------
+
+    def remaining_sessions(
+        self,
+        session: Session,
+        sessions_by_harness: dict[str, list[Session]] | None = None,
+    ) -> int:
+        """Count the sessions that would still point at this project afterwards.
+
+        Counted across **every** harness, because the project-scoped state a
+        deletion can offer to remove is itself cross-harness: Claude's memory and
+        settings, Gemini's folder-trust entry. A Codex session still pointing at
+        the directory means the project is not finished with.
+
+        Args:
+            session: The session about to be deleted.
+            sessions_by_harness: An already-discovered pool to reuse.
+
+        Returns:
+            How many other sessions reference the same project.
+        """
+        if not session.project_path:
+            return 0
+        project = Path(session.project_path)
+        total = 0
+        for name, adapter in self._adapters.items():
+            if Capability.BROWSE not in adapter.capabilities or not adapter.available():
+                continue
+            pool = sessions_by_harness.get(name) if sessions_by_harness else None
+            try:
+                found = adapter.sessions_for_project(project, pool)
+            except Exception:  # noqa: BLE001 - one harness must not break the count
+                continue
+            total += sum(
+                1
+                for other in found
+                if not (
+                    other.harness == session.harness
+                    and other.session_id == session.session_id
+                )
+            )
+        return total
+
+    def project_leftovers(self, project: str) -> dict[str, ProjectLeftovers]:
+        """Collect every harness's project-scoped state for ``project``.
+
+        Args:
+            project: The project directory.
+
+        Returns:
+            A mapping of harness name to :class:`ProjectLeftovers`, containing
+            only the harnesses that hold something.
+        """
+        found: dict[str, ProjectLeftovers] = {}
+        for name, adapter in self._adapters.items():
+            if not adapter.available():
+                continue
+            try:
+                leftovers = adapter.project_leftovers(project)
+            except Exception:  # noqa: BLE001
+                continue
+            if leftovers is not None and not leftovers.empty:
+                found[name] = leftovers
+        return found
+
+    def delete_project_leftovers(
+        self, leftovers: dict[str, ProjectLeftovers], *, dry_run: bool = False
+    ) -> dict[str, DeleteResult]:
+        """Remove each harness's project-scoped state, and record it.
+
+        This is the only path in ``sx`` that destroys memory — knowledge written
+        deliberately to outlive the conversations that produced it — so it is
+        logged under its own action rather than folded into the session delete.
+
+        Args:
+            leftovers: The plans from :meth:`project_leftovers`.
+            dry_run: If True, report what would happen and change nothing.
+
+        Returns:
+            A mapping of harness name to :class:`DeleteResult`.
+        """
+        results: dict[str, DeleteResult] = {}
+        for name, plan in leftovers.items():
+            adapter = self._adapters.get(name)
+            if adapter is None:
+                results[name] = _no_adapter(name, dry_run=dry_run)
+                continue
+            try:
+                results[name] = adapter.delete_project_leftovers(plan, dry_run=dry_run)
+            except Exception as exc:  # noqa: BLE001
+                results[name] = DeleteResult(
+                    dry_run=dry_run,
+                    skipped={Path(f"<{name}>"): f"cleanup failed: {exc!r}"},
+                )
+        if not dry_run and results:
+            project = next(iter(leftovers.values())).project_path
+            memory_count = sum(len(p.memory_files) for p in leftovers.values())
+            self._write_log(
+                {
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "action": "delete_project_state",
+                    "project": project,
+                    "memory_files": memory_count,
+                    "harnesses": {
+                        name: {
+                            "removed": [str(p) for p in r.removed],
+                            "freed_bytes": r.freed_bytes,
+                            "skipped": {str(k): v for k, v in r.skipped.items()},
+                            "note": r.note,
+                        }
+                        for name, r in results.items()
+                    },
+                }
+            )
+        return results
 
     # --- op-log ----------------------------------------------------------
 

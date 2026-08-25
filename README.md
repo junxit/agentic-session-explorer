@@ -26,6 +26,11 @@ want.
 - **Move a project** — relocated a repo? Re-point its sessions at the new
   directory in every harness at once, or have `sx` move the directory too.
   Reversible, unlike deletion.
+- **A delete that finishes the job** — a session takes every artifact the
+  harness wrote for it: sidecars, task and environment state, security state,
+  scratchpads and prompt-history rows.
+- **Project memory browser** — read, archive and remove the notes a harness
+  keeps *between* sessions, which no session delete will ever touch.
 - **Orphan detection** — finds session folders whose project is gone, plus
   stray temp files, and reports *why* each is flagged.
 - **Permanent delete with guardrails** — dry-run preview, typed confirmation
@@ -130,6 +135,7 @@ Turn it off with `--no-update-check` or by exporting `SX_NO_UPDATE_CHECK=1`.
 sx              # launch the interactive TUI
 sx list         # list every discovered session as plain text
 sx move         # re-point a project's sessions at a new directory
+sx memory       # list, export or delete a project's memory
 sx harnesses    # show all known harnesses and their status
 sx version      # show the installed version and check for a newer one
 sx update       # show (or, with --run, execute) the upgrade command
@@ -145,6 +151,7 @@ sx update       # show (or, with --run, execute) the upgrade command
 | `b` | Cycle grouping: **project → date → recency** |
 | `/` | Filter by title or project (live) |
 | `e` | Export the highlighted session to Markdown |
+| `n` | Browse project memory (read, export, delete) |
 | `m` | Re-point this project's sessions at a directory you already moved |
 | `M` | Move the project directory itself, then re-point its sessions |
 | `d` | Permanently delete the highlighted session (with preview) |
@@ -157,6 +164,54 @@ requires typing `DELETE` to confirm. Bulk orphan deletion requires typing
 `DELETE <n>`. Exports default to `./session-exports/` and never overwrite an
 existing file. Every deletion is appended to `./sx-deletions.log` (set
 `SX_LOG_FILE` to keep one log across directories).
+
+## What a delete actually removes
+
+A session is more than its transcript. Deleting one removes every artifact the
+harness wrote *for that session*:
+
+| Artifact | Where |
+|---|---|
+| Transcript | `projects/<encoded-cwd>/<session-id>.jsonl` |
+| Sub-agent transcripts, tool results | `projects/<encoded-cwd>/<session-id>/` |
+| File-history, environment and task state | `~/.claude/{file-history,session-env,tasks}/<session-id>/` |
+| Security-warning state | `~/.claude/security/security_warnings_state_<session-id>.*` |
+| Scratchpad | `/private/tmp/claude-<uid>/<encoded-cwd>/<session-id>/` |
+| Prompt-history rows | `~/.claude/history.jsonl`, `~/.codex/history.jsonl` |
+
+Every one of those paths is *built* from the session id rather than searched
+for, so there is no pattern that could widen onto a neighbour.
+
+**Project memory is deliberately not in that list.** A harness writes memory to
+outlive the conversation that produced it, so ending one conversation must not
+end the memory. Every delete preview says how many memory files the project has
+and that they are being kept. When you delete the **last** session for a project
+— across every harness, not just one — the confirmation offers an extra,
+**unticked** checkbox to remove the project's own state as well: its memory, its
+store folder, its `~/.claude.json` settings entry (trust, `allowedTools`, MCP
+servers), Gemini's folder-trust entry, and its prompt-history rows.
+
+Artifacts `sx` deliberately leaves alone, because the link is too weak to delete
+on: `~/.claude/plans/*.md` (referenced only by filename inside prose),
+`~/.claude/paste-cache/*.txt` (hash-named; most appear in no transcript), and all
+global config, credentials and plugins.
+
+## Project memory
+
+Memory has no place in the session tree — it belongs to a directory, not a
+conversation — so it gets its own view. Press `n`, or from the shell:
+
+```bash
+sx memory                                  # every project's memory
+sx memory --project ~/src/proj             # just one project's
+sx memory --project ~/src/proj --export ./archive
+sx memory --project ~/src/proj --delete --dry-run
+```
+
+Each document is listed with its type (`user`, `feedback`, `project`,
+`reference`), its size, and **the session that wrote it** — memory records an
+`originSessionId`, so `sx` can tell you when a memory has outlived the
+conversation it came from and shows those as `(deleted)`.
 
 ## Moving a project
 
@@ -221,6 +276,7 @@ flowchart TD
     BASE --> DORM["dormant adapters\n(Cline, Cursor, Crush, ...)"]
     REG --> DEL["DeleteService\n(guards + op-log)"]
     REG --> MOV["MoveService\n(re-point + relocate)"]
+    REG --> MEM["memory\n(browse + export + delete)"]
     REG --> EXP["MarkdownExporter"]
 ```
 
@@ -268,7 +324,16 @@ the confirmation you see is the whole truth about what is about to happen:
 - **Failures are never reported as success.** A refused deletion says so, keeps
   its row, and leaves the file on disk.
 - **A store-root allowlist** blocks any target outside a harness's own
-  directory, and refuses a store root itself.
+  directory, and refuses a store root itself. `~/.claude` is never a root — the
+  individual directories the cascade needs are named one by one, so plugins,
+  settings, credentials and a 282 MB vendored virtualenv stay unreachable. The
+  few paths that do sit inside a needed root are refused explicitly.
+- **Cascade targets are constructed, not matched.** Each one is built from the
+  session id, and a final check refuses any target whose name does not contain
+  it.
+- **Memory is never collateral.** No session delete removes it; the only paths
+  that do are the explicit, unticked last-session checkbox and the memory
+  browser, and both are logged under their own op-log actions.
 - **Live sessions need a typed `DELETE`.** Liveness comes from the harness (file
   mtime, or the database column that tracks activity); when it can't be
   determined the session is treated as live rather than assumed safe.

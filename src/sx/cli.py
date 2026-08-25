@@ -6,6 +6,8 @@ Commands:
 * ``sx list``      — list discovered sessions, grouped by harness then project.
 * ``sx move``      — re-point a project's sessions at a new directory (and,
   with ``--relocate``, move the project directory itself first).
+* ``sx memory``    — list, export or delete the memory a harness keeps between
+  sessions for a project.
 * ``sx harnesses`` — show every known harness and its status.
 * ``sx version``   — show the installed version and check GitHub for a newer one.
 * ``sx update``    — show (or run) the upgrade command when a newer release exists.
@@ -25,8 +27,9 @@ from pathlib import Path
 from sx import __version__
 from sx import update as update_mod
 from sx.model import Capability, Session
+from sx.memory import discover_memories, export_memory
 from sx.registry import build_registry
-from sx.service import MoveService, move_summary
+from sx.service import DeleteService, MoveService, move_summary
 from sx.util import human_size
 
 
@@ -288,6 +291,75 @@ def cmd_move(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_memory(args: argparse.Namespace) -> int:
+    """Handle ``sx memory``: list, export or delete project memory.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Process exit code.
+    """
+    memories = discover_memories()
+    if args.project:
+        wanted = str(Path(args.project).expanduser())
+        memories = [m for m in memories if m.project_path == wanted]
+    if not memories:
+        print("No project memory found." if not args.project else f"No memory for {args.project}.")
+        return 1
+
+    current = object()
+    for memory in memories:
+        if memory.project_path != current:
+            current = memory.project_path
+            print(f"\n  {current or '(unknown project)'}")
+        print(
+            f"    {memory.name[:38]:<38} {memory.kind:<10} "
+            f"from {memory.origin_label:<18} {human_size(memory.size_bytes):>9}"
+        )
+    total = sum(m.size_bytes for m in memories)
+    print(f"\n{len(memories)} memory file(s) · {human_size(total)}")
+
+    if args.export:
+        dest = Path(args.export).expanduser()
+        for memory in memories:
+            print(f"  exported → {export_memory(memory, dest)}")
+
+    if not args.delete:
+        return 0
+
+    if args.dry_run:
+        print("\nWould permanently delete:")
+        for memory in memories:
+            print(f"  {memory.path}")
+        print("\nDry run — nothing was changed.")
+        return 0
+
+    print(
+        "\nMemory is kept between sessions on purpose. Deleting it is permanent, "
+        "and the sessions that wrote it will not restore it."
+    )
+    if not args.yes and not _confirm_move(strict=True):
+        print("Canceled — nothing was changed.")
+        return 1
+
+    adapters, _ = build_registry()
+    service = DeleteService({a.name: a for a in adapters})
+    removed = freed = 0
+    refused: list[str] = []
+    for memory in memories:
+        result = service.delete_memory(memory)
+        if result.failed:
+            refused.append(next(iter(result.refused.values()), "refused"))
+            continue
+        removed += 1
+        freed += result.freed_bytes
+    print(f"Deleted {removed} memory file(s) · freed {human_size(freed)}")
+    if refused:
+        print(f"⚠ {len(refused)} refused ({refused[0]})", file=sys.stderr)
+    return 0 if removed else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the argument parser for the ``sx`` command."""
     parser = argparse.ArgumentParser(
@@ -345,6 +417,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes", action="store_true", help="Skip the interactive confirmation."
     )
     p_move.set_defaults(func=cmd_move)
+
+    p_memory = sub.add_parser(
+        "memory",
+        help="List, export or delete project memory.",
+        description=(
+            "Project memory is what a harness keeps between sessions for a "
+            "directory — facts, corrections, ongoing state. It belongs to the "
+            "project rather than to any conversation, so deleting a session "
+            "never removes it."
+        ),
+    )
+    p_memory.add_argument(
+        "--project", metavar="PATH", help="Only memories for this project directory."
+    )
+    p_memory.add_argument(
+        "--export", metavar="DIR", help="Copy every listed memory into DIR."
+    )
+    p_memory.add_argument(
+        "--delete", action="store_true", help="Permanently delete every listed memory."
+    )
+    p_memory.add_argument(
+        "--dry-run", action="store_true", help="Show what --delete would remove and stop."
+    )
+    p_memory.add_argument(
+        "--yes", action="store_true", help="Skip the interactive confirmation."
+    )
+    p_memory.set_defaults(func=cmd_memory)
 
     p_harnesses = sub.add_parser("harnesses", help="Show all known harnesses and status.")
     p_harnesses.set_defaults(func=cmd_harnesses)

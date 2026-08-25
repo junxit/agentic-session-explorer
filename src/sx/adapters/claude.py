@@ -6,8 +6,19 @@ import shutil
 from pathlib import Path
 from typing import Iterator
 
-from ..model import Message, MovePlan, MoveResult, Orphan, OrphanKind, Role, Session
+from ..model import (
+    DeleteResult,
+    Message,
+    MovePlan,
+    MoveResult,
+    Orphan,
+    OrphanKind,
+    ProjectLeftovers,
+    Role,
+    Session,
+)
 from ..util import (
+    DROP,
     dir_size,
     home,
     human_size,
@@ -18,6 +29,7 @@ from ..util import (
     parse_ts,
     repoint,
     rewrite_jsonl,
+    scratchpad_root,
     write_text_atomic,
 )
 from .base import JsonlFolderAdapter
@@ -38,11 +50,45 @@ _UUID_RE = re.compile(
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 
-# Auxiliary ("cascade") directories under ``~/.claude`` that may hold artifacts
-# correlated with a session. They are included in :meth:`store_roots` so the
-# delete guard permits cascade deletion, but on this platform none of them name
-# their entries by session id, so :meth:`correlated_paths` stays conservative.
+# The same shape, unanchored — some artifacts embed the id in the middle of a
+# longer filename (``security_warnings_state_<uuid>.json``).
+_UUID_ANYWHERE_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+# Auxiliary ("cascade") directories under ``~/.claude`` searched by name prefix.
+# Only ``file-history`` actually keys its entries by session id; the other three
+# are kept because they cost one directory listing and a future version of the
+# harness may start using them, but on the sampled machine they never match:
+# shell snapshots are ``snapshot-zsh-<epoch>-<rand>``, ``sessions/`` is keyed by
+# PID, and all 41 ``todos`` entries are ``<agent-id>-agent-<agent-id>.json`` —
+# agent ids, which are not session ids. Do not assume these fire.
 _CASCADE_DIRS = ("todos", "file-history", "shell-snapshots", "sessions")
+
+# Directories under ``~/.claude`` holding one entry named *exactly* for a session
+# id. These are built from the id rather than searched for, so there is no
+# matching to get wrong.
+_SESSION_DIRS = ("session-env", "tasks")
+
+# Files under ``~/.claude`` whose name embeds the session id in the middle. A
+# prefix search misses them entirely, which is why they were never cleaned up.
+_SESSION_FILES = (
+    ("security", "security_warnings_state_{sid}.json"),
+    ("security", "security_warnings_state_{sid}.lock"),
+)
+
+# Directories that must be reachable by the delete guard because the cascade
+# writes into them. ``~/.claude`` itself is deliberately NOT a store root: it
+# holds ``plugins/`` (591 MB here), ``security/agent-sdk-venv`` (282 MB),
+# ``settings.json`` and ``.credentials.json``. Naming the individual parents
+# keeps the blast radius to directories this tool understands.
+_GUARDED_SUBDIRS = _CASCADE_DIRS + _SESSION_DIRS + ("security",)
+
+# Prompt history, tagged per session and per project. Named explicitly because
+# it sits outside every store root; it is only ever rewritten in place, never
+# removed.
+_HISTORY_FILE = "history.jsonl"
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -140,20 +186,41 @@ class ClaudeAdapter(JsonlFolderAdapter):
     def store_roots(self) -> list[Path]:
         """Return the managed directories for Claude.
 
-        The primary session store (``~/.claude/projects``) is always first.
-        Existing cascade directories are appended so the deletion guard permits
-        removing correlated artifacts.
+        The primary session store (``~/.claude/projects``) is always first. Each
+        directory the cascade reaches into is named individually — never
+        ``~/.claude`` as a whole, which also contains plugins, a 282 MB vendored
+        virtualenv, the settings file and the credentials file. Claude's
+        per-session scratchpad tree under ``/private/tmp`` is included for the
+        same reason: the guard has to permit it, and nothing wider.
 
         Returns:
             A list of directories, primary store first.
         """
         base = home() / ".claude"
         roots = [base / "projects"]
-        for sub in _CASCADE_DIRS:
+        for sub in _GUARDED_SUBDIRS:
             d = base / sub
-            if d.exists():
+            if d.exists() and d not in roots:
                 roots.append(d)
+        scratch = scratchpad_root()
+        if scratch.is_dir():
+            roots.append(scratch)
         return roots
+
+    def protected_paths(self) -> list[Path]:
+        """Return the bulk inside ``~/.claude/security`` that is never deletable.
+
+        ``security/`` has to be a store root so the cascade can reach
+        ``security_warnings_state_<session-id>.*``, but it also holds a 282 MB
+        vendored virtualenv and the harness's own logs. Only the state files are
+        ever constructed as targets, so nothing reaches these in practice — this
+        makes that a guarantee rather than a property of the calling code.
+
+        Returns:
+            Paths under ``~/.claude/security`` that must never be removed.
+        """
+        security = home() / ".claude" / "security"
+        return [security / "agent-sdk-venv", security / "log.txt", security / "log.txt.1"]
 
     def session_files(self) -> Iterator[Path]:
         """Yield only the per-session JSONL files under the projects store.
@@ -439,6 +506,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
             matches.append(sidecar)
         if not sid or not _UUID_RE.match(sid):
             return matches
+
         base = home() / ".claude"
         for sub in _CASCADE_DIRS:
             directory = base / sub
@@ -448,7 +516,48 @@ class ClaudeAdapter(JsonlFolderAdapter):
                 name = entry.name
                 if name == sid or name.startswith(f"{sid}.") or name.startswith(f"{sid}-"):
                     matches.append(entry)
-        return matches
+
+        # Constructed, not searched: the path is built from the session id, so
+        # there is no pattern that could widen to a neighbour.
+        for sub in _SESSION_DIRS:
+            candidate = base / sub / sid
+            if candidate.exists():
+                matches.append(candidate)
+        for sub, template in _SESSION_FILES:
+            candidate = base / sub / template.format(sid=sid)
+            if candidate.exists():
+                matches.append(candidate)
+        scratch = self.session_scratchpad(session)
+        if scratch is not None:
+            matches.append(scratch)
+
+        # Belt and braces: every cascade target must carry the session id in its
+        # own name. Nothing above can currently violate this, which is the point
+        # — if a future rule does, it is refused here rather than in production.
+        return [path for path in matches if sid in path.name]
+
+    def session_scratchpad(self, session: Session) -> Path | None:
+        """Return the session's scratchpad directory under ``/private/tmp``.
+
+        Claude writes working files to
+        ``/private/tmp/claude-<uid>/<encoded-project>/<session-id>/``, keyed by
+        both the project and the session. It is outside every session store, so
+        it survived every delete until now.
+
+        Args:
+            session: The session to locate.
+
+        Returns:
+            The scratchpad directory, or ``None`` when there is none.
+        """
+        if not session.project_path:
+            return None
+        candidate = (
+            scratchpad_root()
+            / encode_project_dir(session.project_path)
+            / session.session_id
+        )
+        return candidate if candidate.is_dir() else None
 
     def _folder_cwd(self, session_files: list[Path]) -> str | None:
         """Return the project directory recorded inside a folder's sessions.
@@ -506,6 +615,10 @@ class ClaudeAdapter(JsonlFolderAdapter):
         contains. A folder whose recorded working directory no longer exists is
         reported as :attr:`OrphanKind.DEAD_PROJECT`.
 
+        Artifacts keyed to sessions that no longer exist — scratchpads, task and
+        environment directories, security state — are reported too, grouped by
+        class so one stale class cannot bury the rest.
+
         Two deliberate abstentions keep real data out of the deletion list:
         a folder whose working directory cannot be read is never called dead
         (the lossy folder-name decode is not trusted for this decision), and a
@@ -516,7 +629,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
             A list of discovered orphans.
         """
         projects = home() / ".claude" / "projects"
-        orphans: list[Orphan] = []
+        orphans: list[Orphan] = self._stale_session_artifacts()
         if not projects.is_dir():
             return orphans
         for folder in sorted(projects.iterdir()):
@@ -917,3 +1030,261 @@ class ClaudeAdapter(JsonlFolderAdapter):
             result.rewritten.append(history)
             result.fields_updated += changed
         return changed
+
+    # --- prompt history --------------------------------------------------
+
+    def _history_path(self) -> Path:
+        """Return ``~/.claude/history.jsonl``."""
+        return home() / ".claude" / _HISTORY_FILE
+
+    def _drop_history_rows(
+        self,
+        *,
+        session_id: str | None = None,
+        project: str | None = None,
+        dry_run: bool,
+    ) -> tuple[int, str | None]:
+        """Remove prompt-history rows belonging to a session or a project.
+
+        The file is named explicitly rather than matched, because it lives
+        outside every store root and the containment guard therefore cannot vet
+        it. It is only ever rewritten in place — never removed — through the
+        atomic rewriter, which abandons the write if Claude appends while it is
+        in progress.
+
+        Args:
+            session_id: Drop rows whose ``sessionId`` matches.
+            project: Drop rows whose ``project`` matches.
+            dry_run: If True, count the rows and write nothing.
+
+        Returns:
+            A ``(rows_removed, error)`` pair; ``error`` is ``None`` on success.
+        """
+        history = self._history_path()
+        if not history.is_file() or (session_id is None and project is None):
+            return (0, None)
+
+        def transform(obj: dict):
+            if session_id is not None and obj.get("sessionId") == session_id:
+                return DROP
+            if project is not None and obj.get("project") == project:
+                return DROP
+            return None
+
+        return rewrite_jsonl(history, transform, dry_run=dry_run)
+
+    def delete(self, session: Session, *, dry_run: bool = False) -> DeleteResult:
+        """Delete a session's files, then its rows in the prompt history.
+
+        Files go first: a rewritten history with the transcript still on disk is
+        a cosmetic inconsistency, whereas the reverse would claim the history was
+        cleaned when it was not.
+
+        Args:
+            session: The session to remove.
+            dry_run: If True, report what would happen and change nothing.
+
+        Returns:
+            A :class:`DeleteResult` whose ``note`` records the row count.
+        """
+        result = super().delete(session, dry_run=dry_run)
+        rows, error = self._drop_history_rows(
+            session_id=session.session_id, dry_run=dry_run
+        )
+        if error is not None:
+            result.skipped[self._history_path()] = error
+        elif rows:
+            verb = "would remove" if dry_run else "removed"
+            detail = f"{verb} {rows} prompt-history row(s)"
+            result.note = f"{result.note} · {detail}" if result.note else detail
+        return result
+
+    # --- project-scoped leftovers ----------------------------------------
+
+    def project_leftovers(self, project: str) -> ProjectLeftovers:
+        """Describe the project-scoped state that outlives a project's sessions.
+
+        Memory is the reason this exists. It belongs to the directory rather than
+        to any conversation, so it is listed on every delete (to say it is being
+        kept) and only offered for removal when the last session goes.
+
+        Args:
+            project: The project directory to describe.
+
+        Returns:
+            A :class:`ProjectLeftovers` naming the memory, paths and config
+            entries involved.
+        """
+        leftovers = ProjectLeftovers(project_path=project)
+        folder = self._projects_root() / encode_project_dir(project)
+
+        memory_dir = folder / "memory"
+        if memory_dir.is_dir():
+            leftovers.memory_files.extend(
+                sorted(f for f in memory_dir.rglob("*.md") if f.is_file())
+            )
+        index = folder / "MEMORY.md"
+        if index.is_file():
+            leftovers.memory_files.append(index)
+
+        if folder.is_dir():
+            leftovers.paths.append(folder)
+            leftovers.size_bytes += dir_size(folder)
+        scratch = scratchpad_root() / encode_project_dir(project)
+        if scratch.is_dir():
+            leftovers.paths.append(scratch)
+            leftovers.size_bytes += dir_size(scratch)
+
+        if self._settings_entry(project) is not None:
+            leftovers.config_notes.append("Claude settings entry (trust, allowedTools)")
+        rows, _ = self._drop_history_rows(project=project, dry_run=True)
+        if rows:
+            leftovers.config_notes.append(f"{rows} prompt-history row(s)")
+        return leftovers
+
+    def _settings_entry(self, project: str) -> dict | None:
+        """Return the ``~/.claude.json`` settings for a project, if any."""
+        config = home() / ".claude.json"
+        if not config.is_file():
+            return None
+        try:
+            data = json.loads(config.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError, UnicodeError):
+            return None
+        projects = data.get("projects") if isinstance(data, dict) else None
+        if isinstance(projects, dict):
+            entry = projects.get(project)
+            return entry if isinstance(entry, dict) else None
+        return None
+
+    def delete_project_leftovers(
+        self, leftovers: ProjectLeftovers, *, dry_run: bool = False
+    ) -> DeleteResult:
+        """Remove a project's memory, store folder and settings.
+
+        Only ever reached through an explicit, unticked confirmation: this is the
+        one path in ``sx`` that destroys knowledge deliberately written to
+        outlive its conversations.
+
+        Args:
+            leftovers: The plan produced by :meth:`project_leftovers`.
+            dry_run: If True, report what would happen and change nothing.
+
+        Returns:
+            A :class:`DeleteResult` describing the removal.
+        """
+        result = self._delete_paths(leftovers.paths, dry_run=dry_run)
+        details: list[str] = []
+
+        if self._settings_entry(leftovers.project_path) is not None:
+            error = self._drop_settings_entry(leftovers.project_path, dry_run=dry_run)
+            if error is not None:
+                result.skipped[home() / ".claude.json"] = error
+            else:
+                details.append(
+                    "would remove Claude settings entry"
+                    if dry_run
+                    else "removed Claude settings entry"
+                )
+
+        rows, error = self._drop_history_rows(
+            project=leftovers.project_path, dry_run=dry_run
+        )
+        if error is not None:
+            result.skipped[self._history_path()] = error
+        elif rows:
+            verb = "would remove" if dry_run else "removed"
+            details.append(f"{verb} {rows} prompt-history row(s)")
+
+        if details:
+            result.note = " · ".join(details)
+        return result
+
+    def _drop_settings_entry(self, project: str, *, dry_run: bool) -> str | None:
+        """Remove a project's key from ``~/.claude.json``. Returns an error or None."""
+        if dry_run:
+            return None
+        config = home() / ".claude.json"
+        try:
+            before = config.stat()
+            data = json.loads(config.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError, UnicodeError) as exc:
+            return f"cannot read: {exc}"
+        projects = data.get("projects") if isinstance(data, dict) else None
+        if not isinstance(projects, dict) or project not in projects:
+            return None
+        projects.pop(project)
+        return write_text_atomic(config, json.dumps(data, indent=2), expect=before)
+
+    # --- stale artifacts left by sessions that are already gone ----------
+
+    def _stale_session_artifacts(self) -> list[Orphan]:
+        """Find artifacts keyed to session ids that no longer exist.
+
+        Reported as one grouped orphan per class rather than one per entry: the
+        sampled machine has 350 stale ``session-env`` directories alone, which
+        would bury every other finding in the cleanup screen.
+
+        Returns:
+            A list of :attr:`OrphanKind.STALE_SESSION` orphans.
+        """
+        live = {path.stem for path in self.session_files()}
+        base = home() / ".claude"
+        groups: list[tuple[str, list[Path]]] = []
+
+        for sub in ("file-history",) + _SESSION_DIRS:
+            directory = base / sub
+            if not directory.is_dir():
+                continue
+            stale = [
+                entry
+                for entry in sorted(directory.iterdir())
+                if _UUID_RE.match(entry.name) and entry.name not in live
+            ]
+            if stale:
+                groups.append((f"~/.claude/{sub}", stale))
+
+        security = base / "security"
+        if security.is_dir():
+            stale = []
+            for entry in sorted(security.glob("security_warnings_state_*")):
+                found = _UUID_ANYWHERE_RE.search(entry.name)
+                if found and found.group(0) not in live:
+                    stale.append(entry)
+            if stale:
+                groups.append(("~/.claude/security", stale))
+
+        scratch_root = scratchpad_root()
+        if scratch_root.is_dir():
+            stale = []
+            try:
+                project_dirs = sorted(d for d in scratch_root.iterdir() if d.is_dir())
+            except OSError:
+                project_dirs = []
+            for project_dir in project_dirs:
+                try:
+                    entries = sorted(project_dir.iterdir())
+                except OSError:
+                    continue
+                stale.extend(
+                    e for e in entries if _UUID_RE.match(e.name) and e.name not in live
+                )
+            if stale:
+                groups.append((str(scratch_root), stale))
+
+        orphans: list[Orphan] = []
+        for label, paths in groups:
+            size = sum(dir_size(path) for path in paths)
+            orphans.append(
+                Orphan(
+                    harness=self.name,
+                    kind=OrphanKind.STALE_SESSION,
+                    paths=paths,
+                    reason=(
+                        f"{len(paths)} entry(s) in {label} belong to sessions "
+                        "that no longer exist"
+                    ),
+                    size_bytes=size,
+                )
+            )
+        return orphans

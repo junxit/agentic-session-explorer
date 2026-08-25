@@ -43,7 +43,8 @@ from sx.model import Capability, Orphan, Session
 from sx.registry import build_registry
 from sx.render import messages_to_text
 from sx.service import DeleteService, MoveService, move_summary
-from sx.tui.screens import ConfirmDeleteScreen, MoveScreen, OrphanScreen
+from sx.memory import discover_memories, export_memory
+from sx.tui.screens import ConfirmDeleteScreen, MemoryScreen, MoveScreen, OrphanScreen
 from sx.util import human_size, sanitize_text
 
 _READY_STYLE = "bold green"
@@ -98,6 +99,7 @@ class SxApp(App):
         Binding("b", "cycle_group", "Group"),
         Binding("slash", "start_filter", "Filter"),
         Binding("o", "show_orphans", "Orphans"),
+        Binding("n", "show_memory", "Memory"),
         Binding("e", "export_session", "Export"),
         Binding("d", "delete_session", "Delete"),
         Binding("m", "move_sessions", "Move"),
@@ -154,7 +156,7 @@ class SxApp(App):
             Text.from_markup(
                 "[bold]sx[/bold] — select a session to view its transcript.\n\n"
                 "[dim]↑/↓ move · enter open · b group · / filter · o orphans · "
-                "e export · m move · M move dir · d delete · q quit[/dim]"
+                "n memory · e export · m move · M move dir · d delete · q quit[/dim]"
             )
         )
         # Focus the tree explicitly. Textual otherwise focuses the first
@@ -418,12 +420,22 @@ class SxApp(App):
 
     # --- delete ----------------------------------------------------------
 
-    def _session_preview_text(self, session: Session) -> Text:
+    def _session_preview_text(
+        self, session: Session, leftovers: dict, remaining: int
+    ) -> Text:
         """Render the delete preview for a session.
 
-        Shows the files that will go, any non-file work (database rows, via
-        ``note``), and anything the guard will refuse — so the preview can never
-        understate what a confirmation is about to destroy.
+        Shows the files that will go, any non-file work (database rows and
+        prompt-history rows, via ``note``), and anything the guard will refuse —
+        so the preview can never understate what a confirmation is about to
+        destroy. It also states what is being **kept**: a project's memory
+        outlives its conversations, and silently leaving it behind is how it ends
+        up orphaned with nothing pointing at it.
+
+        Args:
+            session: The session about to be deleted.
+            leftovers: Project-scoped state, per harness.
+            remaining: How many sessions would still reference the project.
         """
         service = self._delete_service
         if service is None:
@@ -452,6 +464,25 @@ class SxApp(App):
             text.append(f"\n\n{len(result.refused)} target(s) will be refused:\n", style="red")
             for path, reason in list(result.refused.items())[:5]:
                 text.append(f"  ✗ {path} — {reason}\n", style="red")
+
+        memory_count = sum(len(plan.memory_files) for plan in leftovers.values())
+        if leftovers:
+            text.append("\n\nThis project also has:\n", style="bold")
+            for name, plan in leftovers.items():
+                adapter = self._adapters_by_name.get(name)
+                label = adapter.display if adapter else name
+                text.append(f"  · {label} — {plan.summary()}\n", style="dim")
+            if remaining > 0:
+                text.append(
+                    f"  kept — {remaining} other session(s) still use this project\n",
+                    style="green",
+                )
+            elif memory_count:
+                text.append(
+                    "  this is the LAST session for this project; tick the box "
+                    "below to remove the above as well\n",
+                    style="yellow",
+                )
         return text
 
     @work
@@ -465,13 +496,32 @@ class SxApp(App):
             self.notify("Delete service unavailable.", severity="error")
             return
         is_live = self._delete_service.is_active(session)
-        preview = self._session_preview_text(session)
+        leftovers = (
+            self._delete_service.project_leftovers(session.project_path)
+            if session.project_path
+            else {}
+        )
+        remaining = self._delete_service.remaining_sessions(
+            session, self._sessions_by_harness
+        )
+        preview = self._session_preview_text(session, leftovers, remaining)
+
+        bundle_label = None
+        if remaining == 0 and leftovers:
+            memory_count = sum(len(plan.memory_files) for plan in leftovers.values())
+            total = sum(plan.size_bytes for plan in leftovers.values())
+            bundle_label = (
+                f"Also remove this project's memory and settings "
+                f"({memory_count} memory file(s), {human_size(total)})"
+            )
+
         screen = ConfirmDeleteScreen(
             heading="Permanently delete this session?",
             preview=preview,
             can_export=True,
             is_live=is_live,
             typed_phrase="DELETE" if is_live else None,
+            bundle_label=bundle_label,
         )
         result = await self.push_screen_wait(screen)
         if result is None:
@@ -497,6 +547,21 @@ class SxApp(App):
             )
         else:
             self.notify(f"Deleted: {outcome.summary()}")
+        if result.get("bundle") and leftovers:
+            bundle = self._delete_service.delete_project_leftovers(leftovers)
+            freed = sum(r.freed_bytes for r in bundle.values())
+            refused = sum(len(r.refused) for r in bundle.values())
+            notes = [r.note for r in bundle.values() if r.note]
+            detail = f"project state removed · {human_size(freed)}"
+            if notes:
+                detail += " · " + " · ".join(notes)
+            if refused:
+                detail += f" · {refused} refused"
+            self.notify(
+                self._toast_safe(detail),
+                severity="warning" if refused else "information",
+                timeout=10,
+            )
         if self._delete_service.last_log_error:
             self.notify(
                 f"Deletion happened but was NOT logged — {self._delete_service.last_log_error}",
@@ -723,6 +788,75 @@ class SxApp(App):
             severity="warning" if refused else "information",
             timeout=10 if refused else 6,
         )
+
+    # --- memory ----------------------------------------------------------
+
+    async def _confirm_memory(self, memories: list) -> bool:
+        """Confirm removing one or more memory documents.
+
+        Memory is the one thing ``sx`` deletes that was written to outlive the
+        conversations that produced it, so the confirmation names each document
+        and, for a whole project's worth, asks for a typed phrase.
+
+        Args:
+            memories: The memories about to be deleted.
+
+        Returns:
+            True if the user confirmed.
+        """
+        if self._delete_service is None or not memories:
+            return False
+        preview = Text()
+        total = sum(m.size_bytes for m in memories)
+        if len(memories) == 1:
+            memory = memories[0]
+            preview.append(f"{memory.name}\n", style="bold")
+            preview.append(f"{memory.project_path or '(unknown project)'}\n\n", style="dim")
+            if memory.description:
+                preview.append(f"{memory.description}\n\n", style="italic")
+            preview.append(f"  • {memory.path}\n")
+        else:
+            project = memories[0].project_path or "(unknown project)"
+            preview.append(f"Every memory for {project}\n", style="bold")
+            preview.append(f"{len(memories)} document(s)\n\n", style="dim")
+            for memory in memories[:20]:
+                preview.append(f"  • {memory.name}  ", style="")
+                preview.append(f"{memory.path.name}\n", style="dim")
+            if len(memories) > 20:
+                preview.append(f"  … and {len(memories) - 20} more\n", style="dim")
+        preview.append(f"\nTotal: {human_size(total)}", style="bold")
+        preview.append(
+            "\n\nMemory is kept between sessions on purpose — deleting it is "
+            "permanent and the sessions that wrote it will not restore it.",
+            style="yellow",
+        )
+        screen = ConfirmDeleteScreen(
+            heading=(
+                "Permanently delete this memory?"
+                if len(memories) == 1
+                else "Permanently delete every memory for this project?"
+            ),
+            preview=preview,
+            typed_phrase=f"DELETE {len(memories)}" if len(memories) > 1 else None,
+        )
+        return await self.push_screen_wait(screen) is not None
+
+    def action_show_memory(self) -> None:
+        """Open the project-memory browser."""
+        if self._delete_service is None:
+            self.notify("Delete service unavailable.", severity="error")
+            return
+        memories = discover_memories()
+        if not memories:
+            self.notify("No project memory found.", severity="warning")
+            return
+        screen = MemoryScreen(
+            memories=memories,
+            on_export=export_memory,
+            on_delete=self._delete_service.delete_memory,
+            confirm=self._confirm_memory,
+        )
+        self.push_screen(screen, lambda _result: self._after_orphans())
 
     # --- orphans ---------------------------------------------------------
 

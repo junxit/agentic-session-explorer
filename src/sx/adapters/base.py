@@ -25,6 +25,7 @@ from sx.model import (
     MovePlan,
     MoveResult,
     Orphan,
+    ProjectLeftovers,
     Session,
 )
 from sx.util import (
@@ -73,6 +74,19 @@ class HarnessAdapter(ABC):
         them, and delete refuses to touch anything outside them.
         """
         raise NotImplementedError
+
+    def protected_paths(self) -> list[Path]:
+        """Return paths that must never be removed, even from inside a store root.
+
+        Some store roots have to be wide enough to reach a handful of
+        session-keyed entries while also containing unrelated bulk the harness
+        depends on. Rather than narrow the root until it no longer covers what
+        the cascade needs, the exceptions are named here and refused outright.
+
+        Returns:
+            Paths (files or directories) that are off limits. Default: none.
+        """
+        return []
 
     def available(self) -> bool:
         """Return True if this harness appears installed (any store root exists)."""
@@ -187,6 +201,48 @@ class HarnessAdapter(ABC):
         """Permanently delete an orphan's files, with the same root guard."""
         return self._delete_paths(orphan.paths, dry_run=dry_run)
 
+    # --- project-scoped state --------------------------------------------
+
+    def project_leftovers(self, project: str) -> ProjectLeftovers | None:
+        """Describe this harness's project-scoped state for ``project``.
+
+        Project-scoped state — memory, per-project settings, trust decisions —
+        belongs to the directory rather than to any one session, so deleting a
+        session never touches it. It is offered for removal only when the last
+        session for that project is deleted.
+
+        Args:
+            project: The project directory.
+
+        Returns:
+            A :class:`ProjectLeftovers`, or ``None`` when this harness keeps no
+            project-scoped state.
+        """
+        return None
+
+    def delete_project_leftovers(
+        self, leftovers: ProjectLeftovers, *, dry_run: bool = False
+    ) -> DeleteResult:
+        """Remove the state described by :meth:`project_leftovers`. Default: none."""
+        return DeleteResult(dry_run=dry_run)
+
+    def delete_paths(self, paths: list[Path], *, dry_run: bool = False) -> DeleteResult:
+        """Remove specific paths through this adapter's guards.
+
+        The public entry point for callers that already know exactly what they
+        want removed — the memory browser, for instance — so they inherit the
+        store-root allowlist, the protected-path refusals and the honest result
+        reporting instead of reimplementing them.
+
+        Args:
+            paths: Files/dirs to remove.
+            dry_run: If True, report what would be removed without removing it.
+
+        Returns:
+            A :class:`DeleteResult`.
+        """
+        return self._delete_paths(paths, dry_run=dry_run)
+
     def _delete_paths(self, paths: list[Path], *, dry_run: bool) -> DeleteResult:
         """Remove a list of paths, guarding each against the store roots.
 
@@ -199,6 +255,7 @@ class HarnessAdapter(ABC):
             in ``skipped`` and never touched.
         """
         roots = self.store_roots()
+        protected = self.protected_paths()
         result = DeleteResult(dry_run=dry_run)
         seen: set[Path] = set()
         for path in paths:
@@ -215,6 +272,12 @@ class HarnessAdapter(ABC):
                 # A store root is "within itself", so the guard above would let
                 # it through and rmtree the entire harness store.
                 result.skipped[path] = "target is a store root (refused)"
+                continue
+            if protected and is_within(path, protected):
+                # Inside a store root, but explicitly off limits — bulk the
+                # harness owns that happens to share a directory with the
+                # session-keyed entries the cascade needs to reach.
+                result.skipped[path] = "protected path (refused)"
                 continue
             size = dir_size(path)
             if dry_run:

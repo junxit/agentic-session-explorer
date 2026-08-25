@@ -4,8 +4,8 @@ import re
 from pathlib import Path
 from typing import Iterator
 
-from ..model import Message, Role, Session
-from ..util import home, parse_ts, read_first_line, repoint
+from ..model import DeleteResult, Message, Role, Session
+from ..util import DROP, home, parse_ts, read_first_line, repoint, rewrite_jsonl
 from .base import JsonlFolderAdapter
 
 # Matches the trailing UUID in a ``rollout-<ts>-<uuid>.jsonl`` filename.
@@ -325,3 +325,37 @@ class CodexAdapter(JsonlFolderAdapter):
         replacement = dict(obj)
         replacement["payload"] = {**payload, "cwd": updated}
         return replacement
+
+    def _history_path(self) -> Path:
+        """Return ``~/.codex/history.jsonl``, Codex's prompt history."""
+        return home() / ".codex" / "history.jsonl"
+
+    def delete(self, session: Session, *, dry_run: bool = False) -> DeleteResult:
+        """Delete a rollout file, then its rows in Codex's prompt history.
+
+        The history file records ``{session_id, ts, text}`` per prompt and sits
+        outside the session store, so it is named explicitly rather than matched
+        and is only ever rewritten in place, never removed.
+
+        Args:
+            session: The session to remove.
+            dry_run: If True, report what would happen and change nothing.
+
+        Returns:
+            A :class:`DeleteResult` whose ``note`` records the row count.
+        """
+        result = super().delete(session, dry_run=dry_run)
+        history = self._history_path()
+        if not history.is_file():
+            return result
+
+        def transform(obj: dict):
+            return DROP if obj.get("session_id") == session.session_id else None
+
+        rows, error = rewrite_jsonl(history, transform, dry_run=dry_run)
+        if error is not None:
+            result.skipped[history] = error
+        elif rows:
+            verb = "would remove" if dry_run else "removed"
+            result.note = f"{verb} {rows} prompt-history row(s)"
+        return result

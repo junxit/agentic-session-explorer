@@ -269,6 +269,22 @@ def is_under(value: str, root: str | Path) -> bool:
     return repoint(value, root, root) is not None
 
 
+class _Drop:
+    """Type of the :data:`DROP` sentinel."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        """Render as ``DROP`` so failed assertions read clearly."""
+        return "DROP"
+
+
+#: Returned by a :func:`rewrite_jsonl` transform to delete that record entirely.
+#: Distinct from ``None`` (leave the line exactly as it is) and from a mapping
+#: (replace it), so a transform can re-point, drop, and keep in one pass.
+DROP = _Drop()
+
+
 def rewrite_jsonl(path: Path, transform, *, dry_run: bool = False) -> tuple[int, str | None]:
     """Rewrite a JSONL file record by record, atomically.
 
@@ -290,7 +306,8 @@ def rewrite_jsonl(path: Path, transform, *, dry_run: bool = False) -> tuple[int,
     Args:
         path: The JSONL file to rewrite.
         transform: Callable taking one parsed record and returning a replacement
-            record, or ``None`` to leave that line exactly as it was.
+            record, :data:`DROP` to delete the record, or ``None`` to leave that
+            line exactly as it was.
         dry_run: If True, count the records that would change and write nothing.
 
     Returns:
@@ -310,7 +327,7 @@ def rewrite_jsonl(path: Path, transform, *, dry_run: bool = False) -> tuple[int,
                 for raw in src:
                     obj = _parse_record(raw)
                     if obj is not None and transform(obj) is not None:
-                        changed += 1
+                        changed += 1  # a replacement or a DROP; both are changes
         except OSError as exc:
             return (0, f"cannot read: {exc}")
         return (changed, None)
@@ -324,15 +341,21 @@ def rewrite_jsonl(path: Path, transform, *, dry_run: bool = False) -> tuple[int,
             for raw in src:
                 replacement: bytes | None = None
                 obj = _parse_record(raw)
+                dropped = False
                 if obj is not None:
                     updated = transform(obj)
-                    if updated is not None:
+                    if updated is DROP:
+                        dropped = True
+                        changed += 1
+                    elif updated is not None:
                         body = raw.rstrip(b"\r\n")
                         ending = raw[len(body):] or b"\n"
                         replacement = (
                             json.dumps(updated, ensure_ascii=False).encode("utf-8") + ending
                         )
                         changed += 1
+                if dropped:
+                    continue
                 out.write(replacement if replacement is not None else raw)
 
         if changed == 0:
@@ -416,3 +439,21 @@ def write_text_atomic(path: Path, text: str, *, expect: os.stat_result | None = 
             except OSError:
                 pass
         return f"write failed: {exc}"
+
+
+def scratchpad_root() -> Path:
+    """Return the directory holding Claude's per-session scratchpads.
+
+    Claude Code writes working files to
+    ``/private/tmp/claude-<uid>/<encoded-project>/<session-id>/``. The uid is the
+    current user's, so the path is derived rather than guessed, and on macOS
+    ``/tmp`` is a symlink to ``/private/tmp`` — the real location is preferred so
+    the delete guard compares resolved paths consistently.
+
+    Returns:
+        The scratchpad root, whether or not it currently exists.
+    """
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    private = Path("/private/tmp")
+    base = private if private.is_dir() else Path("/tmp")
+    return base / f"claude-{uid}"

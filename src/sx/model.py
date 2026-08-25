@@ -129,11 +129,15 @@ class OrphanKind(enum.Enum):
         DEAD_PROJECT: Session/folder whose decoded project path no longer exists.
         EMPTY: An empty directory or zero-message session file.
         STRAY_TEMP: Leftover temp/scratch file (e.g. ``projects.json.*.tmp``).
+        STALE_SESSION: Artifact keyed to a session id that no longer exists —
+            state the harness wrote beside a conversation that has since been
+            deleted.
     """
 
     DEAD_PROJECT = "dead_project"
     EMPTY = "empty"
     STRAY_TEMP = "stray_temp"
+    STALE_SESSION = "stale_session"
 
 
 @dataclass(slots=True)
@@ -313,3 +317,45 @@ class MoveResult:
         if self.refused:
             bits.append(f"{len(self.refused)} refused")
         return " · ".join(bits) if bits else "nothing to move"
+
+
+@dataclass(slots=True)
+class ProjectLeftovers:
+    """Project-scoped state that outlives the sessions it was written beside.
+
+    A project's memory, its store folder, and the harness's per-project settings
+    belong to the *directory*, not to any one conversation. Deleting a session
+    must never take them, but deleting the **last** session leaves them with
+    nothing to belong to — so the confirmation offers them, and states what they
+    are either way.
+
+    Attributes:
+        project_path: The project directory this state belongs to.
+        memory_files: Memory documents found for the project. Reported on every
+            delete so the user knows they are being kept.
+        paths: Files/directories the optional cleanup would remove.
+        config_notes: Human-readable descriptions of non-path edits the cleanup
+            would make (a settings key, prompt-history rows).
+        size_bytes: Total on-disk size of ``paths``.
+    """
+
+    project_path: str
+    memory_files: list[Path] = field(default_factory=list)
+    paths: list[Path] = field(default_factory=list)
+    config_notes: list[str] = field(default_factory=list)
+    size_bytes: int = 0
+
+    @property
+    def empty(self) -> bool:
+        """True if there is nothing project-scoped left to clean up."""
+        return not (self.paths or self.config_notes)
+
+    def summary(self) -> str:
+        """One-line description of what the optional cleanup would remove."""
+        bits: list[str] = []
+        if self.memory_files:
+            bits.append(f"{len(self.memory_files)} memory file(s)")
+        if self.paths:
+            bits.append(f"{len(self.paths)} path(s) · {human_size(self.size_bytes)}")
+        bits.extend(self.config_notes)
+        return " · ".join(bits) if bits else "nothing project-scoped"

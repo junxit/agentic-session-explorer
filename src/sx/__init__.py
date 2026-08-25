@@ -1,3 +1,3 @@
-"""sx — browse and delete AI coding-harness sessions from the terminal."""
+"""sx — browse, move and delete AI coding-harness sessions from the terminal."""
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"

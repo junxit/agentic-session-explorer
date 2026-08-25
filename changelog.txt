@@ -1,6 +1,74 @@
 Changelog
 =========
 
+0.6.0
+-----
+Delete now finishes the job, and project memory gets a home of its own.
+
+Deleting a session used to leave most of what the harness wrote beside it. An
+audit of the real stores found the backlog that had built up: 350 orphaned
+session-env directories, 70 file-history directories, 15 scratchpads, 8 task
+directories, 10 security-state files and 633 prompt-history rows, all belonging
+to conversations that were deleted long ago.
+
+Every artifact a session owns now goes with it
+- ~/.claude/session-env/<session-id>/ and ~/.claude/tasks/<session-id>/.
+- ~/.claude/security/security_warnings_state_<session-id>.{json,lock}. The id
+  sits in the middle of the filename, so the old prefix search never saw them.
+- /private/tmp/claude-<uid>/<encoded-project>/<session-id>/ — the scratchpad,
+  keyed by both project and session, outside every store root until now.
+- Prompt-history rows in ~/.claude/history.jsonl and ~/.codex/history.jsonl,
+  removed through the atomic rewriter added in 0.5.0, so a harness appending
+  mid-rewrite cannot lose turns.
+
+Cascade targets are now constructed from the session id rather than searched
+for by prefix, and a final check refuses any target whose name does not contain
+that id. There is no pattern left that could widen onto a neighbour.
+
+Project memory is never collateral
+- A harness writes memory to outlive the conversation that produced it, so no
+  session delete removes it. Every delete preview states how many memory files
+  the project has and that they are being kept.
+- Deleting the LAST session for a project — counted across every harness, not
+  just the one you are looking at — offers an extra, unticked checkbox to remove
+  the project's own state as well: memory, store folder, the ~/.claude.json
+  settings entry, Gemini's folder-trust entry (whose key is lower-cased, which
+  an exact match had been silently missing) and its prompt-history rows.
+- New `n` key and `sx memory` command browse, export and delete memory
+  directly. Each document lists its type, size and the session that wrote it:
+  memory records an originSessionId, so sx can show which memories have outlived
+  the conversation they came from. Memory removal is logged under its own
+  op-log action, never folded into a session delete.
+
+The backlog is visible instead of assumed
+- The orphan screen reports artifacts belonging to sessions that no longer
+  exist, grouped one row per class — 350 separate rows would have buried every
+  other finding.
+
+Guard changes
+- ~/.claude is deliberately NOT a store root. The directories the cascade needs
+  are named one at a time, so plugins, settings.json, .credentials.json and a
+  282 MB vendored virtualenv stay outside the guard entirely.
+- `security/` has to be a root to reach the state files, so a new
+  `protected_paths()` hook refuses the virtualenv and the harness logs inside
+  it. Nothing in the calling code could reach them; this makes that a guarantee.
+
+Noted while auditing, deliberately not acted on
+- ~/.claude/plans/*.md are referenced by 56 of 62 transcripts, but only by
+  filename inside prose, and a plan outlives its session much as memory does.
+- ~/.claude/paste-cache/*.txt is hash-named and only 3 of 30 appear in any
+  transcript — too weak a link to delete on.
+- Of the four legacy cascade directories, only file-history ever matches: shell
+  snapshots are epoch-named, sessions/ is PID-named, and all 41 todos entries
+  are <agent-id>-agent-<agent-id>.json. They are kept, and the code now says so
+  rather than leaving the next reader to assume they work.
+
+Testing
+- 35 new tests. Fixed an isolation leak the memory module introduced: sx.memory
+  resolves `home` in its own namespace, so patching an adapter's home did not
+  cover it and a TUI test read the developer's real ~/.claude. There is now a
+  regression test for exactly that.
+
 0.5.1
 -----
 - The `M` key (move the project directory, then re-point its sessions) is shown

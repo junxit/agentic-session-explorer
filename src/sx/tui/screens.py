@@ -6,6 +6,8 @@
 * :class:`MoveScreen` — a modal that takes a new project directory, previews
   exactly what each harness would re-point, and gates the move behind a typed
   confirmation when it would touch a live session or move a real directory.
+* :class:`MemoryScreen` — a full screen listing the memory documents a harness
+  keeps between sessions, with export and delete.
 * :class:`OrphanScreen` — a full screen listing orphaned artifacts across
   harnesses, from which they can be cleaned up.
 """
@@ -48,6 +50,11 @@ class ConfirmDeleteScreen(ModalScreen):
         can_export: Whether to offer "export to Markdown first".
         is_live: Whether the target appears to be in active use.
         typed_phrase: Phrase the user must type to enable Delete, or ``None``.
+        bundle_label: When set, offers an extra, unticked checkbox for removing
+            the project's own state (its memory and settings) as well. Shown only
+            when this is the project's last session, and never pre-selected —
+            memory is written to outlive conversations, so taking it has to be a
+            decision rather than a default.
     """
 
     CSS = """
@@ -86,6 +93,7 @@ class ConfirmDeleteScreen(ModalScreen):
         can_export: bool = False,
         is_live: bool = False,
         typed_phrase: str | None = None,
+        bundle_label: str | None = None,
     ) -> None:
         """Store dialog configuration."""
         super().__init__()
@@ -94,6 +102,7 @@ class ConfirmDeleteScreen(ModalScreen):
         self._can_export = can_export
         self._is_live = is_live
         self._typed_phrase = typed_phrase
+        self._bundle_label = bundle_label
 
     def compose(self) -> ComposeResult:
         """Build the dialog widgets."""
@@ -109,6 +118,8 @@ class ConfirmDeleteScreen(ModalScreen):
                 yield Static(self._preview)
             if self._can_export:
                 yield Checkbox("Export to Markdown before deleting", id="export")
+            if self._bundle_label:
+                yield Checkbox(self._bundle_label, id="bundle")
             if self._typed_phrase:
                 yield Label(f'Type "{self._typed_phrase}" to confirm:')
                 yield Input(id="confirm-input", placeholder=self._typed_phrase)
@@ -141,7 +152,10 @@ class ConfirmDeleteScreen(ModalScreen):
         export = False
         if self._can_export:
             export = self.query_one("#export", Checkbox).value
-        self.dismiss({"export": export})
+        bundle = False
+        if self._bundle_label:
+            bundle = self.query_one("#bundle", Checkbox).value
+        self.dismiss({"export": export, "bundle": bundle})
 
     def action_cancel(self) -> None:
         """Escape cancels the dialog."""
@@ -492,3 +506,212 @@ class MoveScreen(ModalScreen):
     def action_cancel(self) -> None:
         """Escape cancels the dialog."""
         self.dismiss(None)
+
+
+class MemoryScreen(Screen):
+    """Browse the memory documents a harness keeps between sessions.
+
+    Memory belongs to a project directory rather than to any one conversation,
+    so it never appears in the session tree and a session delete never removes
+    it. This screen is where it can actually be read, archived and removed.
+
+    Args:
+        memories: The :class:`~sx.memory.MemoryFile` records to display.
+        on_export: Called with a memory to archive it; returns the written path.
+        on_delete: Called with a memory to remove it; returns a delete result.
+        confirm: Async ``(list[MemoryFile]) -> bool`` used to confirm removals.
+    """
+
+    CSS = """
+    #memory-table { height: 1fr; }
+    #memory-summary { height: auto; padding: 0 1; color: $text-muted; }
+    #memory-preview {
+        height: 40%;
+        border-top: solid $panel-darken-2;
+        padding: 0 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "go_back", "Back"),
+        Binding("enter", "preview", "Preview"),
+        Binding("e", "export_selected", "Export"),
+        Binding("d", "delete_selected", "Delete"),
+        Binding("D", "delete_project", "Delete project's"),
+        Binding("q", "go_back", "Back", show=False),
+    ]
+
+    def __init__(self, memories, on_export, on_delete, confirm) -> None:
+        """Store memories and callbacks."""
+        super().__init__()
+        self._memories = list(memories)
+        self._on_export = on_export
+        self._on_delete = on_delete
+        self._confirm = confirm
+
+    def compose(self) -> ComposeResult:
+        """Build the memory table layout."""
+        yield Header(show_clock=False)
+        yield Static(self._summary(), id="memory-summary")
+        table = DataTable(id="memory-table", cursor_type="row", zebra_stripes=True)
+        table.add_columns("Project", "Memory", "Type", "From session", "Size")
+        yield table
+        with VerticalScroll(id="memory-preview"):
+            yield Static(
+                Text("Select a memory to read it.", style="dim italic"),
+                id="memory-body",
+            )
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Populate the table once mounted."""
+        self.title = "sx — project memory"
+        self._reload_table()
+
+    def _summary(self) -> str:
+        """Return a one-line summary of the listed memories."""
+        if not self._memories:
+            return "No memories found.   [esc] back"
+        total = sum(m.size_bytes for m in self._memories)
+        projects = len({m.project_path for m in self._memories})
+        orphaned = sum(
+            1 for m in self._memories if m.origin_session_id and not m.origin_exists
+        )
+        bits = [
+            f"{len(self._memories)} memory file(s) across {projects} project(s)",
+            human_size(total),
+        ]
+        if orphaned:
+            bits.append(f"{orphaned} from deleted session(s)")
+        return "   ".join(bits) + "   [enter] preview  [e] export  [d] delete  [D] project's  [esc] back"
+
+    def _reload_table(self) -> None:
+        """Rebuild the table rows from the current memory list."""
+        table = self.query_one("#memory-table", DataTable)
+        table.clear()
+        for memory in self._memories:
+            # Cells are Text, never str: a memory's name and description are
+            # model-written prose and Textual would parse a str cell as markup.
+            table.add_row(
+                Text(memory.project_name),
+                Text(memory.name),
+                Text(memory.kind),
+                Text(memory.origin_label),
+                Text(human_size(memory.size_bytes)),
+            )
+        self.query_one("#memory-summary", Static).update(self._summary())
+
+    def _selected(self):
+        """Return the memory under the cursor, or ``None``."""
+        if not self._memories:
+            return None
+        row = self.query_one("#memory-table", DataTable).cursor_row
+        if row is None or row < 0 or row >= len(self._memories):
+            return None
+        return self._memories[row]
+
+    # --- actions ---------------------------------------------------------
+
+    def action_go_back(self) -> None:
+        """Return to the main browser."""
+        self.dismiss(None)
+
+    @on(DataTable.RowHighlighted, "#memory-table")
+    def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Render the highlighted memory as the cursor moves."""
+        self.action_preview()
+
+    def action_preview(self) -> None:
+        """Render the highlighted memory's contents in the preview pane.
+
+        The body is read here rather than handed back to the app: these are small
+        Markdown documents, and keeping the read local means the list keeps its
+        place instead of the screen being dismissed to show one file.
+        """
+        body = self.query_one("#memory-body", Static)
+        memory = self._selected()
+        if memory is None:
+            body.update(Text("Select a memory to read it.", style="dim italic"))
+            return
+        try:
+            text = memory.path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            body.update(Text(f"Could not read {memory.path}: {exc}", style="red"))
+            return
+        # Untrusted content: a memory is model-written and may quote anything.
+        rendered = Text()
+        rendered.append(f"{memory.path}\n", style="dim")
+        if memory.description:
+            rendered.append(f"{memory.description}\n", style="italic")
+        rendered.append("\n")
+        rendered.append(sanitize_text(text))
+        body.update(rendered)
+
+    @work
+    async def action_export_selected(self) -> None:
+        """Archive the highlighted memory to a Markdown file."""
+        memory = self._selected()
+        if memory is None:
+            self.app.notify("No memory selected.", severity="warning")
+            return
+        try:
+            path = self._on_export(memory)
+        except Exception as exc:  # noqa: BLE001
+            self.app.notify(f"Export failed: {exc!r}", severity="error")
+            return
+        self.app.notify(f"Exported → {path}")
+
+    def action_delete_selected(self) -> None:
+        """Delete the highlighted memory (with confirmation)."""
+        memory = self._selected()
+        if memory is None:
+            self.app.notify("No memory selected.", severity="warning")
+            return
+        self._run_delete([memory])
+
+    def action_delete_project(self) -> None:
+        """Delete every memory belonging to the highlighted memory's project."""
+        memory = self._selected()
+        if memory is None:
+            self.app.notify("No memory selected.", severity="warning")
+            return
+        group = [m for m in self._memories if m.project_path == memory.project_path]
+        self._run_delete(group)
+
+    @work
+    async def _run_delete(self, memories: list) -> None:
+        """Confirm and delete memories, then refresh the table.
+
+        A memory whose deletion was refused stays in the list: removing the row
+        would say it is gone while it is still on disk.
+        """
+        if not await self._confirm(memories):
+            return
+        removed = 0
+        freed = 0
+        refused: list[str] = []
+        for memory in list(memories):
+            result = self._on_delete(memory)
+            if result.failed:
+                refused.append(next(iter(result.refused.values()), "refused"))
+                continue
+            removed += 1
+            freed += result.freed_bytes
+            self._memories.remove(memory)
+        self._reload_table()
+
+        if not removed:
+            self.app.notify(
+                f"Nothing was deleted — {refused[0] if refused else 'unknown reason'}",
+                severity="error",
+                timeout=10,
+            )
+        elif refused:
+            self.app.notify(
+                f"Deleted {removed} · freed {human_size(freed)} · "
+                f"{len(refused)} refused ({refused[0]})",
+                severity="warning",
+                timeout=10,
+            )
+        else:
+            self.app.notify(f"Deleted {removed} memory file(s) · freed {human_size(freed)}")

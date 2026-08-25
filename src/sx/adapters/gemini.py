@@ -4,11 +4,22 @@ import json
 from pathlib import Path
 from typing import Iterator
 
-from ..model import Message, MovePlan, MoveResult, Orphan, OrphanKind, Role, Session
+from ..model import (
+    DeleteResult,
+    Message,
+    MovePlan,
+    MoveResult,
+    Orphan,
+    OrphanKind,
+    ProjectLeftovers,
+    Role,
+    Session,
+)
 from ..util import (
     dir_size,
     home,
     is_within,
+    is_under,
     iter_jsonl,
     parse_ts,
     read_first_line,
@@ -521,3 +532,117 @@ class GeminiAdapter(JsonlFolderAdapter):
             return
         result.rewritten.append(registry)
         result.fields_updated += len(renames)
+
+    # --- project-scoped state --------------------------------------------
+
+    def _trusted_folders(self) -> Path:
+        """Return ``~/.gemini/trustedFolders.json``."""
+        return home() / ".gemini" / "trustedFolders.json"
+
+    def project_leftovers(self, project: str) -> ProjectLeftovers | None:
+        """Describe Gemini's per-project state: its hash directory and registries.
+
+        Gemini keys a project by an opaque directory name and records the mapping
+        in two files. Once the project's chats are gone the directory holds only
+        a ``.project_root`` marker, and both registry entries point at nothing.
+
+        Args:
+            project: The project directory.
+
+        Returns:
+            A :class:`ProjectLeftovers`, or ``None`` if Gemini knows nothing
+            about this project.
+        """
+        leftovers = ProjectLeftovers(project_path=project)
+        base = home() / ".gemini"
+        for sub in ("tmp", "history"):
+            root = base / sub
+            if not root.is_dir():
+                continue
+            for hash_dir in sorted(root.iterdir()):
+                marker = hash_dir / ".project_root"
+                if not marker.is_file():
+                    continue
+                try:
+                    target = marker.read_text(encoding="utf-8").strip()
+                except (OSError, UnicodeError):
+                    continue
+                if target and is_under(target, project):
+                    leftovers.paths.append(hash_dir)
+                    leftovers.size_bytes += dir_size(hash_dir)
+
+        if self._registry_keys(self._registry(), project):
+            leftovers.config_notes.append("Gemini project registry entry")
+        if self._registry_keys(self._trusted_folders(), project, fold_case=True):
+            leftovers.config_notes.append("Gemini folder-trust entry")
+        return leftovers if not leftovers.empty else None
+
+    @staticmethod
+    def _registry_keys(path: Path, project: str, *, fold_case: bool = False) -> list[str]:
+        """Return the keys in a JSON path-registry that refer to ``project``.
+
+        ``trustedFolders.json`` stores its paths lower-cased, so that file is
+        matched case-insensitively; an exact comparison silently found nothing.
+
+        Args:
+            path: The JSON file to inspect.
+            project: The project directory being removed.
+            fold_case: Compare case-insensitively.
+
+        Returns:
+            The matching top-level keys.
+        """
+        if not path.is_file():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError, UnicodeError):
+            return []
+        mapping = data.get("projects") if isinstance(data.get("projects"), dict) else data
+        if not isinstance(mapping, dict):
+            return []
+        wanted = project.lower() if fold_case else project
+        return [
+            key
+            for key in mapping
+            if isinstance(key, str) and (key.lower() if fold_case else key) == wanted
+        ]
+
+    def delete_project_leftovers(
+        self, leftovers: ProjectLeftovers, *, dry_run: bool = False
+    ) -> DeleteResult:
+        """Remove Gemini's hash directory and both registry entries for a project."""
+        result = self._delete_paths(leftovers.paths, dry_run=dry_run)
+        details: list[str] = []
+        for path, fold in ((self._registry(), False), (self._trusted_folders(), True)):
+            error, removed = self._drop_registry_keys(
+                path, leftovers.project_path, fold_case=fold, dry_run=dry_run
+            )
+            if error is not None:
+                result.skipped[path] = error
+            elif removed:
+                verb = "would remove" if dry_run else "removed"
+                details.append(f"{verb} {removed} entry(s) from {path.name}")
+        if details:
+            result.note = " · ".join(details)
+        return result
+
+    def _drop_registry_keys(
+        self, path: Path, project: str, *, fold_case: bool, dry_run: bool
+    ) -> tuple[str | None, int]:
+        """Delete a project's keys from a JSON registry. Returns ``(error, count)``."""
+        keys = self._registry_keys(path, project, fold_case=fold_case)
+        if not keys:
+            return (None, 0)
+        if dry_run:
+            return (None, len(keys))
+        try:
+            before = path.stat()
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError, UnicodeError) as exc:
+            return (f"cannot read: {exc}", 0)
+        mapping = data.get("projects") if isinstance(data.get("projects"), dict) else data
+        for key in keys:
+            mapping.pop(key, None)
+        error = write_text_atomic(path, json.dumps(data, indent=2) + "\n", expect=before)
+        return (error, 0 if error else len(keys))
