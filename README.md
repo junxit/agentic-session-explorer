@@ -186,6 +186,11 @@ sx update       # show (or, with --run, execute) the upgrade command
 | `r` | Re-scan all harness stores |
 | `q` | Quit |
 
+Drag the divider between the tree and the transcript to resize the tree. The
+width is saved in `~/.config/sx/ui.json` (`$XDG_CONFIG_HOME` is honored) and
+restored on the next start. Terminals that support OSC 22 (kitty, foot, WezTerm,
+Ghostty) also show a resize pointer.
+
 A session written within the last 90 seconds is flagged `● LIVE`; deleting one
 requires typing `DELETE` to confirm. Bulk orphan deletion requires typing
 `DELETE <n>`. Exports default to `./session-exports/` and never overwrite an

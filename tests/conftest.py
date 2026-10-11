@@ -15,6 +15,12 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _isolated_ui_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Point UI state at ``tmp_path`` so tests never write the real ~/.config."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+
+@pytest.fixture(autouse=True)
 def _no_claude_config_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     """Scrub ``CLAUDE_CONFIG_DIR`` so the suite never follows a real one.
 

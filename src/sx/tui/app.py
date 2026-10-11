@@ -30,11 +30,11 @@ from pathlib import Path
 
 from rich.text import Text
 
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Header, Input, RichLog, Tree
+from textual.widgets import Footer, Header, Input, RichLog, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from sx.export import export_session
@@ -45,7 +45,13 @@ from sx.render import messages_to_text
 from sx.service import DeleteService, MoveService, move_summary
 from sx.memory import discover_memories, export_memory
 from sx.tui.screens import ConfirmDeleteScreen, MemoryScreen, MoveScreen, OrphanScreen
-from sx.util import claude_config_warning, human_size, sanitize_text
+from sx.util import (
+    claude_config_warning,
+    human_size,
+    load_left_pane_width,
+    sanitize_text,
+    save_left_pane_width,
+)
 
 _READY_STYLE = "bold green"
 _DORMANT_STYLE = "dim"
@@ -82,11 +88,64 @@ def _contents_summary(path: Path) -> str:
     return "      contains " + ", ".join(bits) + "\n"
 
 
+class Splitter(Static):
+    """Draggable vertical divider that resizes the widget to its left."""
+
+    DEFAULT_CSS = """
+    Splitter { width: 1; height: 1fr; background: $panel-darken-2; }
+    Splitter:hover, Splitter.dragging { background: $accent; }
+    """
+
+    MIN_PANE = 20
+
+    def __init__(self, target: str, **kwargs) -> None:
+        super().__init__("", **kwargs)
+        self._target = target
+
+    def _set_pointer(self, shape: str) -> None:
+        """Ask the terminal to change its mouse pointer (OSC 22).
+
+        Only some terminals (kitty, foot, WezTerm, Ghostty) honor this; the
+        rest ignore the sequence. Terminals cannot report support, so it is
+        sent unconditionally.
+        """
+        driver = self.app._driver
+        if driver is not None and not self.app.is_headless:
+            driver.write(f"\x1b]22;{shape}\x1b\\")
+
+    def on_enter(self, event: events.Enter) -> None:
+        self._set_pointer("ew-resize")
+
+    def on_leave(self, event: events.Leave) -> None:
+        if not self.has_class("dragging"):
+            self._set_pointer("default")
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        self.capture_mouse()
+        self.add_class("dragging")
+        event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self.has_class("dragging"):
+            return
+        pane = self.screen.query_one(self._target)
+        limit = max(self.MIN_PANE, self.screen.size.width - self.MIN_PANE)
+        pane.styles.width = max(self.MIN_PANE, min(event.screen_x - pane.region.x, limit))
+        event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        self.release_mouse()
+        self.remove_class("dragging")
+        self._set_pointer("default")
+        save_left_pane_width(self.screen.query_one(self._target).region.width)
+        event.stop()
+
+
 class SxApp(App):
     """Two-pane terminal browser for AI coding-harness sessions."""
 
     CSS = """
-    #left { width: 52; border-right: solid $panel-darken-2; }
+    #left { width: 52; }
     #tree { padding: 0 1; height: 1fr; }
     #filter { display: none; margin: 0 1; }
     #filter.visible { display: block; }
@@ -143,12 +202,18 @@ class SxApp(App):
             with Vertical(id="left"):
                 yield Input(placeholder="filter title/project…", id="filter")
                 yield Tree("Harnesses", id="tree")
+            yield Splitter("#left")
             yield RichLog(id="transcript", wrap=True, highlight=False, markup=False)
         yield Footer()
 
     def on_mount(self) -> None:
         """Load adapters, build the tree, and show the welcome text."""
         self.title = "sx"
+        saved = load_left_pane_width()
+        if saved is not None:
+            self.query_one("#left").styles.width = max(
+                Splitter.MIN_PANE, min(saved, self.size.width - Splitter.MIN_PANE)
+            )
         self._reload_data()
         self._populate_tree()
         log = self.query_one("#transcript", RichLog)

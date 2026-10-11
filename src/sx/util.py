@@ -565,3 +565,29 @@ def scratchpad_root() -> Path:
     private = Path("/private/tmp")
     base = private if private.is_dir() else Path("/tmp")
     return base / f"claude-{uid}"
+
+
+def _ui_state_file() -> Path:
+    """Return the UI state path (honors ``XDG_CONFIG_HOME``)."""
+    base = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(base) if base else Path.home() / ".config"
+    return root / "sx" / "ui.json"
+
+
+def load_left_pane_width() -> int | None:
+    """Return the saved tree width, or ``None`` if absent or unusable."""
+    try:
+        width = json.loads(_ui_state_file().read_text(encoding="utf-8")).get("left_width")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return width if isinstance(width, int) and not isinstance(width, bool) and width > 0 else None
+
+
+def save_left_pane_width(width: int) -> None:
+    """Persist the tree width; failure to write is ignored (cosmetic state)."""
+    path = _ui_state_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"left_width": width}), encoding="utf-8")
+    except OSError:
+        pass
