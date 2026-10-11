@@ -40,6 +40,8 @@ want.
   before removing it (also available as a standalone export action).
 - **Forward-looking** — harnesses you have not installed yet appear grayed out
   and light up the moment their session store shows up on disk.
+- **Hide harnesses you do not use** — pick which harnesses the tree shows from
+  the command palette. The choice is saved in `~/.config/sx/ui.json`.
 
 ## Supported harnesses
 
@@ -184,6 +186,7 @@ sx update       # show (or, with --run, execute) the upgrade command
 | `d` | Permanently delete the highlighted session (with preview) |
 | `o` | Open the orphan-cleanup screen |
 | `r` | Re-scan all harness stores |
+| `ctrl+p` | Command palette. **Harnesses** opens a menu to show or hide each harness |
 | `q` | Quit |
 
 A session written within the last 90 seconds is flagged `● LIVE`; deleting one

@@ -31,8 +31,9 @@ from pathlib import Path
 from rich.text import Text
 
 from textual import on, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
+from textual.command import CommandPalette, DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, RichLog, Tree
 from textual.widgets.tree import TreeNode
@@ -45,7 +46,7 @@ from sx.render import messages_to_text
 from sx.service import DeleteService, MoveService, move_summary
 from sx.memory import discover_memories, export_memory
 from sx.tui.screens import ConfirmDeleteScreen, MemoryScreen, MoveScreen, OrphanScreen
-from sx.util import claude_config_warning, human_size, sanitize_text
+from sx.util import claude_config_warning, human_size, load_hidden_harnesses, sanitize_text, save_hidden_harnesses
 
 _READY_STYLE = "bold green"
 _DORMANT_STYLE = "dim"
@@ -80,6 +81,34 @@ def _contents_summary(path: Path) -> str:
     if memory:
         bits.append(f"{len(memory)} MEMORY file(s)")
     return "      contains " + ", ".join(bits) + "\n"
+
+
+class HarnessMenu(Provider):
+    """Submenu of the command palette: one show/hide toggle per harness."""
+
+    def _entries(self):
+        app = self.app
+        for adapter in app._adapters_by_name.values():
+            shown = adapter.name not in app._hidden
+            note = "" if adapter.available() else " (not installed)"
+            yield (
+                f"{'✓' if shown else '✗'} {adapter.display}{note}",
+                "Shown. Select to hide." if shown else "Hidden. Select to show.",
+                lambda name=adapter.name: app._toggle_harness(name),
+            )
+
+    async def discover(self) -> Hits:
+        """List every toggle before the user types."""
+        for label, help_text, action in self._entries():
+            yield DiscoveryHit(label, action, help=help_text)
+
+    async def search(self, query: str) -> Hits:
+        """Fuzzy-match the toggles against what the user typed."""
+        matcher = self.matcher(query)
+        for label, help_text, action in self._entries():
+            score = matcher.match(label)
+            if score > 0:
+                yield Hit(score, matcher.highlight(label), action, help=help_text)
 
 
 class SxApp(App):
@@ -125,6 +154,7 @@ class SxApp(App):
         super().__init__()
         self._adapters_by_name: dict = {}
         self._sessions_by_harness: dict[str, list[Session]] = {}
+        self._hidden: set[str] = load_hidden_harnesses()
         self._delete_service: DeleteService | None = None
         self._move_service: MoveService | None = None
         self._group_mode = GroupMode.PROJECT
@@ -231,7 +261,7 @@ class SxApp(App):
         for adapter_name, err in getattr(self, "_load_errors", []):
             tree.root.add_leaf(Text(f"⚠ {adapter_name}: {err}", style="red"))
 
-        ready_names = list(self._sessions_by_harness)
+        ready_names = [n for n in self._sessions_by_harness if self._visible(n)]
         for name in ready_names:
             adapter = self._adapters_by_name[name]
             sessions = filter_sessions(self._sessions_by_harness[name], self._filter)
@@ -239,7 +269,7 @@ class SxApp(App):
 
         # Dormant / unavailable harnesses, grayed.
         for adapter in self._adapters_by_name.values():
-            if adapter.name in self._sessions_by_harness:
+            if adapter.name in self._sessions_by_harness or not self._visible(adapter.name):
                 continue
             label = Text()
             label.append("· ", style=_DORMANT_STYLE)
@@ -247,6 +277,31 @@ class SxApp(App):
             state = "dormant" if adapter.available() else "not installed"
             label.append(f"  ({state})", style="dim italic")
             tree.root.add(label, data=None, allow_expand=False)
+
+    def get_system_commands(self, screen):
+        """Add a "Harnesses" entry to the command palette (ctrl+p)."""
+        yield from super().get_system_commands(screen)
+        yield SystemCommand(
+            "Harnesses",
+            "Choose which harnesses the tree shows",
+            self._open_harness_menu,
+        )
+
+    def _open_harness_menu(self) -> None:
+        """Open the harness submenu: a second palette listing each toggle."""
+        self.push_screen(
+            CommandPalette(providers=[HarnessMenu], placeholder="Show or hide a harness…")
+        )
+
+    def _toggle_harness(self, name: str) -> None:
+        """Flip a harness between hidden and shown, then save and redraw."""
+        self._hidden ^= {name}
+        save_hidden_harnesses(self._hidden)
+        self._populate_tree()
+
+    def _visible(self, name: str) -> bool:
+        """Return whether a harness row is shown: the user has not hidden it."""
+        return name not in self._hidden
 
     def _add_ready_harness(self, root: TreeNode, adapter, sessions: list[Session]) -> None:
         """Add one browsable harness and its grouped sessions to the tree."""

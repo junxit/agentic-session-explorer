@@ -565,3 +565,40 @@ def scratchpad_root() -> Path:
     private = Path("/private/tmp")
     base = private if private.is_dir() else Path("/tmp")
     return base / f"claude-{uid}"
+
+
+def _ui_state_file() -> Path:
+    """Return the UI state path (honors ``XDG_CONFIG_HOME``)."""
+    base = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(base) if base else Path.home() / ".config"
+    return root / "sx" / "ui.json"
+
+
+def _load_ui_state() -> dict:
+    """Return the saved UI state, or an empty dict if absent or unreadable."""
+    try:
+        state = json.loads(_ui_state_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _save_ui_state(**changes: object) -> None:
+    """Merge ``changes`` into the UI state file; failure to write is ignored."""
+    path = _ui_state_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({**_load_ui_state(), **changes}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def load_hidden_harnesses() -> set[str]:
+    """Return the harness names the user chose to hide from the tree."""
+    names = _load_ui_state().get("hidden_harnesses")
+    return {n for n in names if isinstance(n, str)} if isinstance(names, list) else set()
+
+
+def save_hidden_harnesses(names: set[str]) -> None:
+    """Persist the hidden harness names (cosmetic state)."""
+    _save_ui_state(hidden_harnesses=sorted(names))
