@@ -14,11 +14,12 @@
 
 from __future__ import annotations
 
-from rich.text import Text
+from typing import ClassVar
 
+from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
@@ -83,7 +84,7 @@ class ConfirmDeleteScreen(ModalScreen):
     Button { margin-left: 2; }
     """
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel")]
 
     def __init__(
         self,
@@ -179,7 +180,7 @@ class OrphanScreen(Screen):
     #orphan-summary { height: auto; padding: 0 1; color: $text-muted; }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "go_back", "Back"),
         Binding("d", "delete_selected", "Delete selected"),
         Binding("D", "delete_all", "Delete ALL"),
@@ -368,7 +369,7 @@ class MoveScreen(ModalScreen):
     Button { margin-left: 2; }
     """
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel")]
 
     def __init__(
         self,
@@ -532,7 +533,7 @@ class MemoryScreen(Screen):
     }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "go_back", "Back"),
         Binding("enter", "preview", "Preview"),
         Binding("e", "export_selected", "Export"),

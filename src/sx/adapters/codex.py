@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from ..model import DeleteResult, Message, Role, Session
 from ..util import DROP, home, parse_ts, read_first_line, repoint, rewrite_jsonl

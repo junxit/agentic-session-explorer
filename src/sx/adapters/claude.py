@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from ..model import (
     DeleteResult,
@@ -166,7 +166,7 @@ def _decode_folder(name: str) -> str:
     Returns:
         An approximate absolute path (e.g. ``/Users/alice/project``).
     """
-    stripped = name[1:] if name.startswith("-") else name
+    stripped = name.removeprefix("-")
     return "/" + stripped.replace("-", "/")
 
 
@@ -555,7 +555,7 @@ class ClaudeAdapter(JsonlFolderAdapter):
                 continue
             for entry in sorted(directory.iterdir()):
                 name = entry.name
-                if name == sid or name.startswith(f"{sid}.") or name.startswith(f"{sid}-"):
+                if name == sid or name.startswith((f"{sid}.", f"{sid}-")):
                     matches.append(entry)
 
         # Constructed, not searched: the path is built from the session id, so

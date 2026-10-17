@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from sx.adapters import claude as claude_mod
 from sx.adapters.claude import ClaudeAdapter, encode_project_dir
 from sx.memory import (

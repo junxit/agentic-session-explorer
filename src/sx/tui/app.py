@@ -25,25 +25,24 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime
 from pathlib import Path
+from typing import ClassVar
 
 from rich.text import Text
-
 from textual import on, work
 from textual.app import App, ComposeResult
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, RichLog, Tree
 from textual.widgets.tree import TreeNode
 
 from sx.export import export_session
 from sx.grouping import GroupMode, filter_sessions, group_sessions
+from sx.memory import discover_memories, export_memory
 from sx.model import Capability, Orphan, Session
 from sx.registry import build_registry
 from sx.render import messages_to_text
 from sx.service import DeleteService, MoveService, move_summary
-from sx.memory import discover_memories, export_memory
 from sx.tui.screens import ConfirmDeleteScreen, MemoryScreen, MoveScreen, OrphanScreen
 from sx.util import claude_config_warning, human_size, sanitize_text
 
@@ -93,7 +92,7 @@ class SxApp(App):
     #transcript { padding: 0 1; }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh_tree", "Refresh"),
         Binding("b", "cycle_group", "Group"),
@@ -873,7 +872,7 @@ class SxApp(App):
                 continue
             try:
                 orphans.extend(adapter.find_orphans())
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S112
                 continue
         return orphans
 

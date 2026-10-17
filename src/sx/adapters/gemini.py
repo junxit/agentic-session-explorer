@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from ..model import (
     DeleteResult,
@@ -18,8 +18,8 @@ from ..model import (
 from ..util import (
     dir_size,
     home,
-    is_within,
     is_under,
+    is_within,
     iter_jsonl,
     parse_ts,
     read_first_line,

@@ -26,8 +26,8 @@ from pathlib import Path
 
 from sx import __version__
 from sx import update as update_mod
-from sx.model import Capability, Session
 from sx.memory import discover_memories, export_memory
+from sx.model import Capability, Session
 from sx.registry import build_registry
 from sx.service import DeleteService, MoveService, move_summary
 from sx.util import (

@@ -13,13 +13,13 @@ from __future__ import annotations
 from datetime import datetime
 
 import pytest
+from textual.widgets import Button, DataTable, Input
 
 from sx.adapters.base import HarnessAdapter
 from sx.model import Capability, Message, Orphan, OrphanKind, Role
 from sx.service import DeleteService
 from sx.tui.app import SxApp
 from sx.tui.screens import ConfirmDeleteScreen, OrphanScreen
-from textual.widgets import Button, DataTable, Input
 
 
 class _FakeAdapter(HarnessAdapter):

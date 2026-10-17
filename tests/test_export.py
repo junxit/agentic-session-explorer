@@ -9,9 +9,9 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from sx.adapters.base import HarnessAdapter
 from sx.export import export_filename, export_session, messages_to_markdown
 from sx.model import Capability, Message, Role, Session
-from sx.adapters.base import HarnessAdapter
 
 
 class _FakeAdapter(HarnessAdapter):

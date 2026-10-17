@@ -18,7 +18,6 @@ import sx.adapters.opencode as opencode_mod
 from sx.adapters.opencode import OpencodeAdapter
 from sx.model import OrphanKind, Role
 
-
 # --- synthetic database builder -------------------------------------------
 
 def _opencode_root(home_dir: Path) -> Path:

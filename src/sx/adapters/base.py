@@ -31,8 +31,8 @@ from sx.model import (
 from sx.util import (
     dir_size,
     file_mtime,
-    is_within,
     is_under,
+    is_within,
     iter_jsonl,
     mount_unavailable,
     read_first_line,

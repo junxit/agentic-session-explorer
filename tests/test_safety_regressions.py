@@ -21,7 +21,6 @@ from sx.model import Capability, DeleteResult, Message, Orphan, OrphanKind, Role
 from sx.service import DeleteService
 from sx.util import is_within, mount_unavailable, sanitize_text
 
-
 # --- helpers ---------------------------------------------------------------
 
 class _RefusingAdapter(HarnessAdapter):

@@ -297,7 +297,7 @@ class DeleteService(_OperationService):
             pool = sessions_by_harness.get(name) if sessions_by_harness else None
             try:
                 found = adapter.sessions_for_project(project, pool)
-            except Exception:  # noqa: BLE001 - one harness must not break the count
+            except Exception:  # noqa: BLE001, S112 - one harness must not break the count
                 continue
             total += sum(
                 1
@@ -325,7 +325,7 @@ class DeleteService(_OperationService):
                 continue
             try:
                 leftovers = adapter.project_leftovers(project)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S112
                 continue
             if leftovers is not None and not leftovers.empty:
                 found[name] = leftovers
@@ -546,7 +546,7 @@ class MoveService(_OperationService):
         for adapter in self._adapters.values():
             try:
                 roots = adapter.store_roots()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S112
                 continue
             for root in roots:
                 if is_under(str(root), old):
@@ -683,6 +683,6 @@ def move_summary(results: dict[str, MoveResult]) -> str:
     parts = [
         f"{name}: {result.summary()}"
         for name, result in results.items()
-        if not (result.summary() == "nothing to move")
+        if result.summary() != "nothing to move"
     ]
     return " · ".join(parts) if parts else "nothing to move"

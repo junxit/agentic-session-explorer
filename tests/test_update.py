@@ -13,7 +13,6 @@ import pytest
 
 from sx import update as up
 
-
 # --- version parsing / comparison -----------------------------------------
 
 @pytest.mark.parametrize(

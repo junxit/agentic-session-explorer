@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 import pytest
+from textual.widgets import Button, Input
 
 from sx.adapters import claude as claude_mod
 from sx.adapters.claude import ClaudeAdapter, encode_project_dir
@@ -19,7 +20,6 @@ from sx.grouping import GroupMode
 from sx.service import DeleteService, MoveService
 from sx.tui.app import SxApp
 from sx.tui.screens import MoveScreen
-from textual.widgets import Button, Input
 
 SID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -204,7 +204,6 @@ async def test_a_live_session_requires_the_typed_phrase(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_n_opens_the_memory_browser(tmp_path, monkeypatch):
     """Memory has no home in the session tree, so it gets its own screen."""
-    from sx.adapters import claude as claude_mod
     from sx.tui.screens import MemoryScreen
 
     app = SxApp()
@@ -230,8 +229,9 @@ async def test_the_project_cleanup_box_appears_only_on_the_last_session(
     tmp_path, monkeypatch
 ):
     """Memory is offered when nothing else references the project, never before."""
-    from sx.tui.screens import ConfirmDeleteScreen
     from textual.widgets import Checkbox
+
+    from sx.tui.screens import ConfirmDeleteScreen
 
     app = SxApp()
     async with app.run_test(size=(160, 45)) as pilot:
