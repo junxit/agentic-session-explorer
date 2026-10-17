@@ -87,7 +87,8 @@ you did not point it at.
 
 ## Run it
 
-You need [`uv`](https://docs.astral.sh/uv/). Pick one of the two ways below.
+You need [`uv`](https://docs.astral.sh/uv/). sx runs on Python 3.15 or newer, and
+uv downloads it automatically if you don't have it. Pick one of the two ways below.
 
 ### Option A — run straight from GitHub, no install (`uvx`)
 
@@ -143,6 +144,14 @@ uv tool install git+https://github.com/junxit/agentic-session-explorer.git
 uv tool upgrade sx
 # or force the very latest commit on main:
 uv tool install --force git+https://github.com/junxit/agentic-session-explorer.git
+```
+
+If `sx` was installed under Python 3.13 or 3.14, `uv tool upgrade sx` stops with
+"the current Python version … does not satisfy Python>=3.15". Move the tool to
+3.15 once; plain upgrades work again after that:
+
+```bash
+uv tool upgrade sx --python 3.15
 ```
 
 **Uninstall:**
@@ -321,6 +330,7 @@ database file or other sessions. Its shared `log/` files are left alone.
 uv sync --extra dev
 uv run sx list
 uv run pytest
+uv run ruff check
 ```
 
 ### Releasing
