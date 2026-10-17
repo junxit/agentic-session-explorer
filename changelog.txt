@@ -1,6 +1,45 @@
 Changelog
 =========
 
+0.7.0
+-----
+sx now requires Python 3.15 or newer, and every dependency is pinned to an
+exact version.
+
+Upgrading from 0.6.x on Python 3.13 or 3.14
+- A plain `uv tool upgrade sx` stops with "the current Python version … does
+  not satisfy Python>=3.15": the tool's environment was built on the older
+  interpreter, and uv does not change interpreters on its own. Run
+  `uv tool upgrade sx --python 3.15` once; plain upgrades work again after
+  that. The update notice in 0.6.1 and earlier still suggests the plain
+  command, and released code cannot be changed after the fact.
+- Fresh installs need nothing extra. `uv tool install` and `uvx` download
+  Python 3.15 themselves when no compatible interpreter is present.
+
+Dependencies are pinned
+- textual 8.2.8 and rich 15.0.0 are exact pins rather than open-ended minimums,
+  so a future Textual major release cannot reach a new install before it has
+  been tested here. Textual 8.2.8 also fixes a crash when clicking a screen's
+  padding and the parsing of multi-codepoint Kitty keys.
+- The build backend (hatchling 1.32.4) and the development tools (pytest 9.1.1,
+  pytest-asyncio 1.4.0, ruff 0.17.1) are pinned too. ruff joins the dev extra,
+  so `uv run ruff check` lints with the same version everywhere, and a
+  .python-version file selects 3.15 for development.
+- uv.lock is refreshed to current releases. None of the previous versions had a
+  known vulnerability; this is maintenance, not a security fix.
+- Dependabot now watches uv.lock weekly and opens security updates.
+
+Lint
+- The tree is clean under ruff 0.17.1: imports sorted, unused imports removed,
+  collections.abc.Iterator instead of typing.Iterator, Textual BINDINGS
+  annotated as ClassVar. No behavior changed. The four deliberate catch-all
+  handlers — one adapter's failure must not abort a whole scan — now carry an
+  explicit S112 exemption alongside their existing one.
+
+Testing
+- All 213 tests pass on Python 3.15, including with deprecation warnings
+  promoted to errors.
+
 0.6.1
 -----
 sx now follows Claude Code to a relocated configuration home.
