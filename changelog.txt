@@ -1,6 +1,273 @@
 Changelog
 =========
 
+0.8.0
+-----
+sx now supports Pi and its fork Oh My Pi: their sessions can be browsed,
+exported, deleted, moved to a new project directory and cleaned up like any
+other harness's. Most of the fixes below came out of an adversarial review of
+the delete, move and cleanup code, and several of them affect every harness.
+
+Pi and Oh My Pi
+- New adapters for Pi (`pi`, npm @earendil-works/pi-coding-agent 1.5.0) and
+  Oh My Pi (`omp` 18.15.0). Both were built from each harness's source code;
+  no real sessions were sampled, so the README marks them "from source".
+- Branched sessions. Both harnesses keep every retried or edited prompt in the
+  same file. In the viewer, `t` cycles between the current branch (with a
+  count of what the other branches hold), the current branch followed by every
+  other branch, and the whole tree in the order it was written. `e` asks which
+  of the three to export.
+- A Pi delete removes the transcript only, as Pi's own delete does. An Oh My
+  Pi delete removes what Oh My Pi's own delete removes: the transcript, its
+  artifacts folder and every S.jsonl.*.bak backup, plus any rewrite temp file
+  older than five minutes. The backups go first and the delete stops at the
+  first failure, so a backup never outlives its transcript. Nothing is deleted
+  while the transcript is missing, lock files beside a transcript are never
+  removed, and Oh My Pi's shared stores (history.db, stats.db, pins, blobs/)
+  are left alone.
+- A move re-points the session header and relocates the transcript into the
+  folder the new path encodes to. Pi forks that link to a moved transcript are
+  re-pointed at its new location.
+- A file sx cannot read or recognize is listed as "(unrecognized format)
+  <file name>" and can be browsed, but is never deleted, moved or offered for
+  cleanup; `sx harnesses` counts such files. Only the debris the harnesses
+  leave is offered, as a fragment: an empty file, or one whose first line is
+  an entry the harness writes, and for Oh My Pi only under its own
+  <time>_<id>.jsonl name. A damaged first line makes the file unrecognized.
+- A session in a format sx does not know (a format version it has not seen,
+  or an Oh My Pi file that begins neither with a 256-byte title slot and the
+  header nor, as older ones do, with the header) is refused for a delete as
+  well as a move, and makes its project unknown, so its folder is never
+  offered as a dead project's.
+- A transcript reached through a symlinked project folder, or as a linked
+  file, is listed once. Nothing is deleted or moved through a project folder
+  that is a symbolic link.
+- `sx harnesses` shows where each store was found and any warnings about it.
+  The other commands print the warnings to stderr, and the TUI lists them at
+  the top of the tree. A harness that handed its store to the other one shows
+  as "store belongs to Oh My Pi" (or Pi), in `sx harnesses` and in the TUI.
+
+Where their stores are
+- Pi's PI_CODING_AGENT_DIR is read the way Pi reads it: nothing is trimmed,
+  `~/x` and `~//x` are joined onto the home directory as Node's path.join
+  joins them, and a file:// URL becomes the path it names. A relative value is
+  ignored with a warning, as are the home directory and `/`.
+- Oh My Pi reads PI_CODING_AGENT_DIR without `~` expansion, and ignores it
+  while a profile is set. Profiles (OMP_PROFILE beats PI_PROFILE),
+  PI_CONFIG_DIR (a directory name under home), and XDG_DATA_HOME and
+  XDG_STATE_HOME (only when <xdg>/omp already exists) are followed.
+- sx also reads the .env files Oh My Pi reads at startup (~/.env,
+  <config root>/.env and <agent dir>/.env, and a session's project .env when
+  it checks that session's lease) for the variables Oh My Pi takes from them.
+  They are parsed as Bun's util.parseEnv parses them, Bun being Oh My Pi's
+  runtime, and the store location follows that reading. They are parsed as
+  Node's util.parseEnv parses them too: where the two read a followed
+  variable differently (`KEY: value`, `KEY` then `=value` on the next line, a
+  byte-order mark, `export<TAB>KEY`, a carriage-return line break, `=KEY=v`),
+  every lease counts as unknown, so every Oh My Pi session counts as open,
+  with a warning. In a project's own .env, a disagreement makes only that
+  project's sessions unknown, with no warning.
+- A .env file sx cannot read the way Oh My Pi does (over 1 MiB, not a regular
+  file, or not readable) makes the leases it could move unknown, so those
+  sessions count as open. PI_TEST_SESSION_OWNERS_DIR is honored, and
+  PI_TEST_RUNTIME is mirrored as Oh My Pi handles it.
+- When both harnesses point at one store, it belongs to whichever harness the
+  store's own marks point to. Files only Oh My Pi creates in the agent
+  directory, or, among the sessions, a transcript or crash backup that starts
+  with Oh My Pi's title slot or an artifacts folder named for a transcript,
+  make it Oh My Pi's; otherwise it is Pi's. A file name alone, a backup's or a
+  lock file's, is not evidence. The other harness lists nothing there, and
+  says why.
+- Not listed: custom session directories (--session-dir,
+  PI_CODING_AGENT_SESSION_DIR, Pi's sessionDir setting) and other Oh My Pi
+  profiles' sessions, with a warning wherever sx can tell; and Oh My Pi's gc
+  archives (archive/sessions/*.jsonl.gz), which sx never touches.
+
+Open sessions
+- Pi marks no open session at all. Oh My Pi holds a lease on a session only
+  while it writes to it: sx asks the kernel whether that lock is held
+  (F_GETLK, on macOS) and never takes it. It checks every lease directory it
+  knows of, and counts finding none beside existing sessions as "cannot
+  tell", which means open.
+- On macOS sx also lists your own processes that look like Oh My Pi (`omp` or
+  `oh-my-pi` in the command line, from ps) and what they have open (lsof). An
+  open <id>.lock counts as held wherever Oh My Pi keeps it, and its directory
+  becomes one more place sx checks. If Oh My Pi is running and its open files
+  cannot be listed, or the process list cannot be read, a session that would
+  read free counts as unknown, which means open. An Oh My Pi running under
+  another name, as another user or inside a container is not seen by this
+  scan, but the lease-directory checks still apply. lsof runs with -b, which
+  keeps it off the calls that can hang on an unresponsive mount, and in a
+  UTF-8 locale; the names it escapes are decoded.
+- The live badge reuses its process scan for 5 seconds from when the scan
+  finished, and the store and .env readings for 5 seconds too. When it has to
+  scan again, ps and lsof get one second each, and a timeout counts as "cannot
+  tell", which shows as live. Every delete and move scans and reads afresh.
+- On Linux Oh My Pi's lease is an abstract socket sx cannot check, so every
+  Oh My Pi session counts as open there: browse and export only. The same
+  holds on every other platform but macOS.
+- A session that is open but idle cannot be detected, so both harnesses'
+  delete and move confirmations say to close the session in the harness first.
+  Otherwise Pi's next turn fails, or is written to a file Pi never lists, and
+  Oh My Pi's next write can bring a deleted session back whole, leave a moved
+  one in two places, or leave a header-less file.
+
+Deleting
+- Liveness is checked again right before a delete runs. A session that went
+  live after the dialog opened, and so was confirmed without the typed DELETE,
+  is not deleted; pressing `d` again asks for the phrase.
+- A path that cannot be checked is reported as refused and never removed.
+  0.7.0 reported it as "does not exist", as if it were already gone.
+- The last-session checkbox comes with a list of the paths it removes, per
+  harness, and what each holds. Right before removing them, sx counts the
+  project's sessions again from a fresh scan of every harness, Pi and Oh My Pi
+  check their folders again, and nothing is removed if the session's
+  transcript was not deleted; 0.7.0 removed the project state even then.
+- A delete that removed some paths but refused others warns which ones
+  stayed.
+- A session whose file disappeared while its dialog was open is reported as
+  gone, and nothing is exported or deleted.
+
+Orphan cleanup, every harness
+- Each orphan is fingerprinted when it is listed. At deletion, anything that
+  changed since then, was written in the last 90 seconds, or left the store is
+  refused, and each harness asks its own question again: is the project still
+  gone, is the folder still empty?
+- "Cannot check" never means "gone": only "no such file or directory" makes a
+  recorded project missing. A permission error, a dangling link or an
+  unmounted volume leaves it unknown, and an unknown project is never an
+  orphan.
+- A Claude folder shared by colliding project paths belongs to a dead project
+  only if every project in it is gone. 0.7.0 let the first readable session
+  decide.
+- A Pi folder with no sessions is offered only after 24 hours without writes,
+  because Pi creates it as soon as it starts in a project, and its listing
+  warns that a Pi running in that project fails its next prompt once the
+  folder is gone.
+- Orphan confirmations show each harness's open-session warning.
+- Claude's scratchpads under /private/tmp/claude-<uid> are no longer offered
+  as orphans, and the last-session cleanup no longer removes a project's
+  scratchpad folder. That directory follows the user id, not the config home,
+  so every Claude config on the account shares it: 0.7.0 offered another
+  config's scratchpads as stale, an open session's included, whenever the
+  config sx read did not know their sessions. A deleted session's own
+  scratchpad still goes with it.
+- Claude's other stale artifacts (file history, environment, task and
+  security state) are offered only when every project folder could be read,
+  so a session out of sight never looks deleted. A permission error counts as
+  out of sight, and so does a projects store or a project folder behind a
+  link that dangles (an unmounted volume, say) or leads to something other
+  than a directory. The same check runs again at deletion time.
+- One orphan that removes more than one path needs the typed DELETE <n>, as
+  deleting every orphan does. Stale artifacts are grouped a class at a time,
+  so a single row can hold many directories, and 0.7.0 confirmed it with a
+  plain Enter.
+- An orphan delete is limited to the paths its confirmation previewed as
+  removable, each still checked again. A path the dialog showed as refused
+  stays refused, even if its reason lapses while you type the phrase (the
+  90-second window, for example), for one orphan and for every orphan alike.
+  What stays is named in the toast with its reason, recorded in the op-log,
+  and keeps its row. Deleting every orphan lists the paths that will be
+  refused inside otherwise deletable orphans, and counts the orphans the
+  dialog does not show.
+- An orphan delete that the op-log could not record says so, as session
+  deletes already did.
+
+Moving (Claude, Pi and Oh My Pi)
+- A move runs as units: a whole folder, or one session with its sidecars.
+  Each unit's rewrites and renames succeed together or are put back, Ctrl-C
+  included, and reported as refused. Planning accounts for folders created
+  earlier in the same move, and each unit is checked again right before it
+  runs.
+- Nothing is ever nested inside a folder that appeared in the meantime; it is
+  merged into instead. Nothing is moved into a destination folder that is a
+  symbolic link. A rename across file systems is refused rather than done as
+  a copy. When a later step of the same move carries a transcript again, the
+  result still says where it ended up.
+- A move that changes only the letter case of a path renames the folder in
+  place on a case-insensitive file system (APFS by default).
+- Re-running the same `sx move` finishes an interrupted one, Oh My Pi memory
+  it left behind included, even when no session remains to move. For Pi and
+  Oh My Pi it also removes a second hard link a crash left in the old folder.
+- Pi fork links of the units that finished are re-pointed even when a move is
+  interrupted or fails part-way. A re-run repairs fork links an interrupted
+  run left dangling whenever a Pi session takes part in it, even with nothing
+  left to relocate. Links left by a run killed outright after its last
+  relocation, with no Pi session left under the old path, are not repaired.
+- The op-log records a move step by step: `move_started` with the plan, one
+  `move_unit` per unit (status `done`, `partial`, `refused` or
+  `nothing to do`), and `move_sessions` with `status` (`finished` or
+  `interrupted`) and `relocated`. After a Ctrl-C, or an error, the records say
+  what the move had done by then, the Pi fork links it re-pointed on its way
+  out included.
+- `sx move` exits 1 when anything was refused, not only when everything was,
+  and `sx move --dry-run` exits 1 when its preview shows anything that would
+  be refused (0 for a clean preview).
+- A Claude project folder shared with a colliding project path is no longer
+  moved whole when one of them moves; its sessions move individually. A
+  transcript that recorded some other directory first still travels with its
+  folder, as it did in 0.7.0: only true path collisions stay behind.
+- Oh My Pi: `additionalDirectories` follows Oh My Pi's own moveTo (the new
+  cwd is filtered out and an empty list is dropped; nothing is re-pointed),
+  and `previousSessionFiles` gains the old location. A session's artifacts
+  folder and backups move with it, or nothing of it does; sx moves the backups
+  on purpose, so Oh My Pi cannot restore the session in the old folder. The
+  project's memory folder moves too, ahead of the sessions, unless another
+  project's sessions share it, some of the project's sessions stay behind, or
+  it was written in the last 90 seconds. Memory folders are planned as
+  project folders are, so in a chained move each is vacated before another
+  takes its name, and two that would trade names stay put. Lock files stay
+  where they are, and leftover backups or drafts in a folder make its
+  sessions move one by one.
+- The TUI plans from a fresh scan before the preview and again before running.
+  A session that went live after a confirmation given without the typed
+  phrase is refused, in the TUI and at `sx move`'s y/N prompt.
+- The live-session warning now says what really happens: moving a session its
+  harness still has open breaks it. `--yes` still prints it.
+
+Rewrites
+- A rewritten line keeps every byte except the value that changed: number
+  formats, escapes, spacing and CRLF line endings. A line sx cannot splice
+  that way (one with a duplicate key, say) is written whole, compactly, as the
+  harnesses write JSON. 0.7.0 rewrote every changed line whole, with a space
+  after each `,` and `:`.
+- So an inverse move now restores the transcripts it rewrote byte for byte in
+  all but a few cases, which the README lists. Two are by design: Oh My Pi's
+  `previousSessionFiles` grows and its `additionalDirectories` loses the new
+  cwd, as Oh My Pi's own move does; and the inverse of a merge also moves the
+  destination's pre-existing sessions, which the plan now says.
+- A deeply nested line is skipped as malformed instead of aborting a scan.
+
+TUI and CLI
+- Export before delete starts on the whole tree for a branched session,
+  whatever the viewer shows, says when the current branch is empty, and reads
+  the session again when it runs.
+- In both branch-view pickers the highlighted row is the choice, marked ● and
+  ○ so it reads without color.
+- For a branched session, `e` reads the session again after you pick a view,
+  so the export holds everything written while the dialog was open.
+- Opening a session no longer cancels an export, delete or move running in
+  the background, and an action that is canceled says so.
+- Text from session files cannot drive the terminal anywhere: `sx list`,
+  `sx move`, `sx memory`, `sx harnesses`, every TUI label, preview, dialog and
+  toast, and the headers of exported Markdown. C1 control characters are
+  neutralized too: U+009B shows as ␛[.
+- The session id in an export file name is made filename-safe. A `/` in one
+  aborted the export, and with it the export before a delete. Exporting a
+  session whose file is gone writes nothing.
+- The delete dialog fits on short terminals and opens on its heading, at
+  80×24 too: the preview shrinks so the controls stay in view, and the
+  warnings wrap.
+- A dialog is dismissed only once, so two quick Enters cannot close the
+  screen beneath it as well.
+
+Testing
+- A test that runs for 120 seconds is taken for a hang: the run stops with
+  exit status 1, naming the test and printing every thread's stack.
+  SX_TEST_TIMEOUT changes the limit; 0 turns the guard off.
+- All 1634 tests pass on Python 3.15, including with every warning promoted
+  to an error.
+
 0.7.0
 -----
 sx now requires Python 3.15 or newer, and every dependency is pinned to an
