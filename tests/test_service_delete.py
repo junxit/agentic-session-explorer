@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from sx.adapters.base import HarnessAdapter
-from sx.model import Capability, Message, Role, Session
+from sx.model import Capability, Message, Orphan, OrphanKind, Role, Session
 from sx.service import DeleteService
 
 
@@ -150,6 +150,25 @@ def test_delete_in_root_file_and_logs(store: Path, session_file: Path, tmp_path:
     assert entry["id"] == "abcd1234"
 
 
+def test_a_real_delete_reports_the_bytes_it_freed(store: Path, session_file: Path, tmp_path: Path):
+    """The result, its summary and the op-log all count what went, not ``0 B``."""
+    svc, _, log_path = _service(store, tmp_path)
+    folder = session_file.parent / "sidecar"
+    folder.mkdir()
+    (folder / "notes.txt").write_text("12345", encoding="utf-8")
+    size = session_file.stat().st_size + 5
+    session = _session(session_file)
+    session.paths.append(folder)
+
+    result = svc.delete(session)
+
+    assert not session_file.exists() and not folder.exists()
+    assert result.freed_bytes == size
+    assert result.summary() == f"2 path(s) · {size} B"
+    entry = json.loads(log_path.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert entry["freed_bytes"] == size
+
+
 def test_preview_writes_no_log_line(store: Path, session_file: Path, tmp_path: Path):
     """A dry-run preview appends nothing to the op-log; a real delete does."""
     svc, _, log_path = _service(store, tmp_path)
@@ -161,3 +180,32 @@ def test_preview_writes_no_log_line(store: Path, session_file: Path, tmp_path: P
     svc.delete(session)
     lines = log_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1  # exactly one line from the real delete
+
+
+# --- what an orphan's confirmation refused ---------------------------------
+
+
+@pytest.mark.parametrize("left", [1, 0], ids=["partly", "nothing-left"])
+def test_an_orphan_delete_records_what_its_confirmation_refused(
+    store: Path, tmp_path: Path, left: int
+):
+    """Shown as refused, so not deleted: the result and the op-log name it all the same.
+
+    So they do when nothing else of the orphan is left to delete: it is
+    recorded as refused, not passed over in silence.
+    """
+    svc, _, log_path = _service(store, tmp_path)
+    quiet, fresh = store / "quiet.tmp", store / "fresh.tmp"
+    for path in (quiet, fresh):
+        path.write_text(path.name, encoding="utf-8")
+    reason = "was modified in the last 90 seconds (refused)"
+    orphan = Orphan("tmp", OrphanKind.STRAY_TEMP, [quiet][:left], "stray files")
+
+    result = svc.delete_orphan(orphan, refused={fresh: reason})
+
+    assert fresh.exists() and quiet.exists() == (left == 0)
+    assert result.removed == [quiet][:left] and result.refused == {fresh: reason}
+    assert result.failed == (left == 0) and result.summary().endswith("1 refused")
+    entry = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert entry["removed"] == [str(quiet)][:left]
+    assert entry["skipped"] == {str(fresh): reason}

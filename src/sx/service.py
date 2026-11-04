@@ -18,6 +18,7 @@ that inverse is always recoverable.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
@@ -30,6 +31,7 @@ from sx.model import (
     DeleteResult,
     MovePlan,
     MoveResult,
+    MoveUnit,
     Orphan,
     ProjectLeftovers,
     Session,
@@ -216,12 +218,29 @@ class DeleteService(_OperationService):
             return _no_adapter(orphan.harness, dry_run=True)
         return adapter.delete_orphan(orphan, dry_run=True)
 
-    def delete_orphan(self, orphan: Orphan) -> DeleteResult:
-        """Permanently delete an orphan and record it in the op-log."""
+    def delete_orphan(
+        self, orphan: Orphan, *, refused: dict[Path, str] | None = None
+    ) -> DeleteResult:
+        """Permanently delete an orphan and record it in the op-log.
+
+        Args:
+            orphan: The orphan to delete. The confirmation passes it narrowed
+                to what it showed as removable, which may be nothing at all.
+            refused: What the confirmation showed as refused, with why — paths
+                ``orphan`` no longer holds. They are added to the result's
+                refusals before the op-log is written, so the record and the
+                result name every path that stayed; a refusal the delete makes
+                itself keeps its own reason.
+
+        Returns:
+            The :class:`DeleteResult`, ``refused`` included.
+        """
         adapter = self._adapters.get(orphan.harness)
         if adapter is None:
             return _no_adapter(orphan.harness, dry_run=False)
         result = adapter.delete_orphan(orphan, dry_run=False)
+        for path, reason in (refused or {}).items():
+            result.skipped.setdefault(path, reason)
         self._log(
             action="delete_orphan",
             harness=orphan.harness,
@@ -430,6 +449,79 @@ def _no_move_adapter(harness: str, *, dry_run: bool) -> MoveResult:
     )
 
 
+def _partial_move(harness: str, plan: MovePlan, progress: MoveResult, reason: str) -> MoveResult:
+    """Return what a harness's move did before it failed, or was interrupted.
+
+    Args:
+        harness: The harness.
+        plan: Its plan; what it refused up front is part of the result.
+        progress: What it did, done or put back (see :func:`_progress_of`).
+        reason: Why the move stopped, recorded under ``<harness>``.
+
+    Returns:
+        The partial :class:`MoveResult`.
+    """
+    result = MoveResult(dry_run=progress.dry_run)
+    result.skipped.update(plan.blocked)
+    result.absorb(progress)
+    result.note = progress.note
+    result.skipped[Path(f"<{harness}>")] = reason
+    return result
+
+
+def _progress_of(progress: MoveResult, exc: BaseException) -> MoveResult:
+    """Return what a harness's move did before ``exc`` stopped it.
+
+    ``progress`` is what each of its units reported as it ran. Work an adapter
+    does around its units is known only to the adapter — Pi re-points the fork
+    links of the units that finished on its way out — so ``move()`` may attach
+    it to the exception it re-raises, as a :class:`~sx.model.MoveResult` named
+    ``partial_result`` holding only that work: what no unit reported. It is
+    absorbed into what the units reported, its note kept.
+
+    Args:
+        progress: What the harness's units reported.
+        exc: What stopped the move.
+
+    Returns:
+        ``progress`` alone when ``exc`` carries no ``partial_result``,
+        otherwise both together.
+    """
+    partial = getattr(exc, "partial_result", None)
+    if not isinstance(partial, MoveResult):
+        return progress
+    merged = MoveResult(dry_run=progress.dry_run, note=partial.note or progress.note)
+    merged.absorb(progress)
+    merged.absorb(partial)
+    return merged
+
+
+def _plan_left_behind(adapter, old: Path, new: Path) -> MovePlan | None:
+    """Plan what a harness with no session left to move still keeps for ``old``.
+
+    Project state a harness relocates on its own — Oh My Pi's memory folders —
+    can outlast its sessions under ``old``: an earlier run of the same move
+    moved every session but not it (the memory was being written, say, or an
+    older ``sx`` ran it last and was interrupted). No session selects the
+    harness then, so only its own plan can find it. The plan is kept only
+    when it would relocate something: a harness with no session here must not
+    add refusals or notes to the move.
+
+    Args:
+        adapter: The harness's adapter.
+        old: The project directory being moved away from.
+        new: The project directory being moved to.
+
+    Returns:
+        The plan, or ``None`` when it would relocate nothing (or failed).
+    """
+    try:
+        plan = adapter.plan_move([], old, new)
+    except Exception:  # noqa: BLE001 - nothing was asked of this harness
+        return None
+    return plan if plan.relocations else None
+
+
 class MoveService(_OperationService):
     """Coordinates re-pointing a project at a new directory across every harness.
 
@@ -463,6 +555,13 @@ class MoveService(_OperationService):
     ) -> dict[str, MovePlan]:
         """Ask every capable harness what re-pointing ``old`` to ``new`` involves.
 
+        Sessions an interrupted move from ``old`` to ``new`` left half done —
+        re-pointed, but still in the folder named for ``old`` — are included
+        (see :meth:`~sx.adapters.base.HarnessAdapter.stranded_sessions`), so
+        running the same move again finishes it. So is project state a
+        harness relocates on its own, such as Oh My Pi's memory, when no
+        session of that harness is left to move (:func:`_plan_left_behind`).
+
         Args:
             old: The project directory being moved away from.
             new: The project directory being moved to.
@@ -481,7 +580,12 @@ class MoveService(_OperationService):
                 continue
             pool = sessions_by_harness.get(name) if sessions_by_harness else None
             try:
+                if pool is None:
+                    pool = list(adapter.discover())
                 sessions = adapter.sessions_for_project(old, pool)
+                # An interrupted move of the same two directories left these
+                # re-pointed but not relocated; planning them again finishes it.
+                stranded = adapter.stranded_sessions(old, new, pool)
             except Exception as exc:  # noqa: BLE001 - one harness must not break the rest
                 plans[name] = MovePlan(
                     harness=name,
@@ -490,18 +594,22 @@ class MoveService(_OperationService):
                     blocked={Path(f"<{name}>"): f"discovery failed: {exc!r}"},
                 )
                 continue
+            sessions = sessions + [s for s in stranded if s not in sessions]
             if not sessions:
-                continue
-            try:
-                plan = adapter.plan_move(sessions, old, new)
-            except Exception as exc:  # noqa: BLE001
-                plan = MovePlan(
-                    harness=name,
-                    old=old,
-                    new=new,
-                    sessions=sessions,
-                    blocked={Path(f"<{name}>"): f"planning failed: {exc!r}"},
-                )
+                plan = _plan_left_behind(adapter, old, new)
+                if plan is None:
+                    continue
+            else:
+                try:
+                    plan = adapter.plan_move(sessions, old, new)
+                except Exception as exc:  # noqa: BLE001
+                    plan = MovePlan(
+                        harness=name,
+                        old=old,
+                        new=new,
+                        sessions=sessions,
+                        blocked={Path(f"<{name}>"): f"planning failed: {exc!r}"},
+                    )
             plan.include_config = include_config
             plan.live = [s for s in sessions if self.is_active(s)]
             if not plan.empty or plan.live:
@@ -614,7 +722,19 @@ class MoveService(_OperationService):
     def move(
         self, plans: dict[str, MovePlan], *, dry_run: bool = False
     ) -> dict[str, MoveResult]:
-        """Execute every plan, recording the outcome in the op-log.
+        """Execute every plan, recording it in the op-log as it happens.
+
+        A real move writes a ``move_started`` record holding the whole plan
+        before anything is touched, a ``move_unit`` record as each atomic unit
+        finishes (or is refused), and the ``move_sessions`` record at the end —
+        with ``"status": "interrupted"`` if the move was cut short, by Ctrl-C
+        for instance. An interrupted move therefore always leaves a trail, and
+        running the same move again finishes it.
+
+        A harness whose move fails, or is interrupted, part-way keeps what its
+        units did — done, or put back — in its result and in the final record,
+        next to the failure, along with anything its adapter attached to the
+        exception as ``partial_result`` (see :func:`_progress_of`).
 
         Args:
             plans: The plans produced by :meth:`plan`.
@@ -624,42 +744,163 @@ class MoveService(_OperationService):
             A mapping of harness name to :class:`MoveResult`.
         """
         results: dict[str, MoveResult] = {}
-        for name, plan in plans.items():
-            adapter = self._adapters.get(name)
-            if adapter is None:
-                results[name] = _no_move_adapter(name, dry_run=dry_run)
-                continue
-            try:
-                results[name] = adapter.move(plan, dry_run=dry_run)
-            except Exception as exc:  # noqa: BLE001 - one harness must not abort the rest
-                results[name] = MoveResult(
-                    dry_run=dry_run,
-                    skipped={Path(f"<{name}>"): f"move failed: {exc!r}"},
-                )
         if not dry_run and plans:
-            self._log_move(plans, results)
+            self.last_log_error = None
+            self._log_move_started(plans)
+        status = "interrupted"
+        try:
+            for name, plan in plans.items():
+                adapter = self._adapters.get(name)
+                if adapter is None:
+                    results[name] = _no_move_adapter(name, dry_run=dry_run)
+                    continue
+                progress = MoveResult(dry_run=dry_run)
+                plan.on_unit = functools.partial(self._unit_ran, name, plan, progress)
+                try:
+                    results[name] = adapter.move(plan, dry_run=dry_run)
+                except Exception as exc:  # noqa: BLE001 - one harness must not abort the rest
+                    results[name] = _partial_move(
+                        name, plan, _progress_of(progress, exc), f"move failed: {exc!r}"
+                    )
+                except BaseException as exc:
+                    results[name] = _partial_move(
+                        name,
+                        plan,
+                        _progress_of(progress, exc),
+                        "interrupted before this harness's move finished; "
+                        "re-run the same move to finish it",
+                    )
+                    raise
+                finally:
+                    plan.on_unit = None
+            status = "finished"
+        finally:
+            if not dry_run and plans:
+                self._log_move(plans, results, status=status)
         return results
 
-    def _log_move(
-        self, plans: dict[str, MovePlan], results: dict[str, MoveResult]
+    def _unit_ran(
+        self,
+        harness: str,
+        plan: MovePlan,
+        progress: MoveResult,
+        unit: MoveUnit,
+        outcome: MoveResult,
     ) -> None:
-        """Append one record describing a completed move.
+        """Keep one unit's outcome, and record it unless this is a dry run.
+
+        Args:
+            harness: The harness the unit belongs to.
+            plan: The plan being executed.
+            progress: What the harness's units have done so far (mutated).
+            unit: The unit.
+            outcome: What it did.
+        """
+        progress.absorb(outcome)
+        if not progress.dry_run:
+            self._log_move_unit(harness, plan, unit, outcome)
+
+    def _log(self, entry: dict) -> None:
+        """Append ``entry`` to the op-log, keeping the first failure of a move."""
+        error = _append_log(self._log_path, entry)
+        if error is not None and self.last_log_error is None:
+            self.last_log_error = error
+
+    def _log_move_started(self, plans: dict[str, MovePlan]) -> None:
+        """Record the whole plan before a move touches anything.
+
+        Args:
+            plans: The plans about to be executed.
+        """
+        any_plan = next(iter(plans.values()))
+        self._log(
+            {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "action": "move_started",
+                "old": str(any_plan.old),
+                "new": str(any_plan.new),
+                "harnesses": {
+                    name: {
+                        "sessions": len(plan.sessions),
+                        "rewrites": [str(p) for p in plan.rewrites],
+                        "relocations": [[str(a), str(b)] for a, b in plan.relocations],
+                        "blocked": {str(k): v for k, v in plan.blocked.items()},
+                        "note": plan.note,
+                    }
+                    for name, plan in plans.items()
+                },
+            }
+        )
+
+    def _log_move_unit(
+        self, harness: str, plan: MovePlan, unit: MoveUnit, outcome: MoveResult
+    ) -> None:
+        """Record one unit of a move as soon as it has run.
+
+        Args:
+            harness: The harness the unit belongs to.
+            plan: The plan being executed.
+            unit: The unit.
+            outcome: What it did.
+        """
+        if outcome.moved or outcome.rewritten:
+            status = "partial" if outcome.refused else "done"
+        else:
+            status = "refused" if outcome.refused else "nothing to do"
+        self._log(
+            {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "action": "move_unit",
+                "old": str(plan.old),
+                "new": str(plan.new),
+                "harness": harness,
+                "unit": unit.kind,
+                "planned": [[str(a), str(b)] for a, b in unit.relocations],
+                "status": status,
+                "rewritten": [str(p) for p in outcome.rewritten],
+                "moved": [[str(a), str(b)] for a, b in outcome.moved],
+                "relocated": {str(a): str(b) for a, b in outcome.relocated.items()},
+                "fields_updated": outcome.fields_updated,
+                "skipped": {str(k): v for k, v in outcome.skipped.items()},
+            }
+        )
+
+    def _log_move(
+        self,
+        plans: dict[str, MovePlan],
+        results: dict[str, MoveResult],
+        *,
+        status: str = "finished",
+    ) -> None:
+        """Append one record describing the whole move, once it has ended.
 
         Both endpoints are recorded, because that is what makes the operation
         reversible: running the inverse move restores the previous state, and
         this log is where the previous path can still be read afterwards.
+        ``moved`` lists each rename as it actually ran and ``relocated`` where
+        every transcript actually ended up, so the record matches the disk even
+        when a folder had to be merged rather than renamed.
+
+        Args:
+            plans: The plans that were executed.
+            results: What each harness did; a harness the move never reached
+                is absent.
+            status: ``"finished"``, or ``"interrupted"`` when the move was cut
+                short.
         """
         any_plan = next(iter(plans.values()))
-        self._write_log(
+        self._log(
             {
                 "ts": datetime.now().isoformat(timespec="seconds"),
                 "action": "move_sessions",
+                "status": status,
                 "old": str(any_plan.old),
                 "new": str(any_plan.new),
                 "harnesses": {
                     name: {
                         "rewritten": [str(p) for p in result.rewritten],
                         "moved": [[str(a), str(b)] for a, b in result.moved],
+                        "relocated": {str(a): str(b) for a, b in result.relocated.items()},
                         "fields_updated": result.fields_updated,
                         "skipped": {str(k): v for k, v in result.skipped.items()},
                         "note": result.note,

@@ -5,7 +5,9 @@ theme is that `sx` must never claim to have done something it did not do, and
 must never destroy more than its confirmation disclosed.
 
 Everything runs against synthetic data under ``tmp_path``; the user's real
-harness stores are never read or written.
+harness stores are never read or written. The one test that builds the real
+registry first points every adapter module's ``home``, Claude's scratchpad root,
+``HOME`` and ``TMPDIR`` into the sandbox (see ``sandboxed_registry``).
 """
 
 from __future__ import annotations
@@ -67,25 +69,141 @@ class _RefusingAdapter(HarnessAdapter):
 
 # --- the guard must actually be reachable ----------------------------------
 
-def test_orphan_paths_must_be_inside_declared_store_roots():
+#: Adapter modules that import ``home`` into their own namespace. Each must be
+#: redirected there: patching :func:`sx.util.home` alone would not reach them.
+_HOME_MODULES = (
+    "sx.util",
+    "sx.adapters.claude",
+    "sx.adapters.codex",
+    "sx.adapters.gemini",
+    "sx.adapters.opencode",
+    "sx.adapters.pi",
+    "sx.adapters.omp",
+    "sx.adapters.dormant",
+)
+
+
+def _aged(*paths: Path) -> None:
+    """Backdate paths an hour, so no harness counts them as being written."""
+    import os
+    import time
+
+    past = time.time() - 3600
+    for path in paths:
+        os.utime(path, (past, past))
+
+
+def _synthetic_stores(home: Path) -> None:
+    """Write, under ``home``, a store per harness holding orphans of every kind it reports."""
+    import sqlite3
+
+    from sx.adapters.claude import encode_project_dir
+
+    gone = home / "gone" / "proj"
+
+    claude = home / ".claude"
+    (claude / "projects" / "-empty-folder").mkdir(parents=True)
+    dead = claude / "projects" / encode_project_dir(str(gone))
+    dead.mkdir()
+    transcript = dead / "11111111-2222-3333-4444-555555555555.jsonl"
+    transcript.write_text(json.dumps({"type": "user", "cwd": str(gone)}) + "\n", encoding="utf-8")
+    stale = "99999999-8888-7777-6666-555555555555"
+    (claude / "session-env" / stale).mkdir(parents=True)
+    (home / "scratch" / encode_project_dir(str(gone)) / stale).mkdir(parents=True)
+
+    rollout = home / ".codex" / "sessions" / "2026" / "01" / "01" / "rollout-x.jsonl"
+    rollout.parent.mkdir(parents=True)
+    rollout.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": "cx", "cwd": str(gone)}}) + "\n",
+        encoding="utf-8",
+    )
+
+    gemini = home / ".gemini"
+    (gemini / "tmp" / "abc123" / "chats").mkdir(parents=True)
+    (gemini / "projects.json.42.tmp").write_text("{}", encoding="utf-8")
+
+    opencode = home / ".local" / "share" / "opencode"
+    (opencode / "storage" / "session_diff").mkdir(parents=True)
+    con = sqlite3.connect(opencode / "opencode.db")
+    con.execute("CREATE TABLE session (id text PRIMARY KEY)")
+    con.commit()
+    con.close()
+    (opencode / "storage" / "session_diff" / "ghost.json").write_text("[]", encoding="utf-8")
+
+    pi = home / ".pi" / "agent" / "sessions"
+    (pi / "--empty--").mkdir(parents=True)
+    (pi / "--frag--").mkdir()
+    (pi / "--frag--" / "2026-05-01T10-00-00-000Z_F.jsonl").write_text(
+        json.dumps({"type": "message", "id": "u1"}) + "\n", encoding="utf-8"
+    )
+    (pi / "--dead--").mkdir()
+    (pi / "--dead--" / "2026-05-01T10-00-00-000Z_D.jsonl").write_text(
+        json.dumps({"type": "session", "version": 3, "id": "D", "cwd": str(gone)}) + "\n",
+        encoding="utf-8",
+    )
+
+    omp = home / ".omp" / "agent" / "sessions"
+    (omp / "-empty").mkdir(parents=True)
+    _aged(*(p for p in home.rglob("*") if p.is_file()))
+
+
+@pytest.fixture()
+def sandboxed_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Build the real registry with every store redirected under ``tmp_path``.
+
+    Each adapter module's own ``home`` — they import it by value — and Claude's
+    scratchpad root under ``/private/tmp`` are pointed into the sandbox, and so
+    are ``HOME`` and ``TMPDIR``, so nothing that resolves a path at call time
+    can reach a real store.
+
+    Returns:
+        The adapters, built over synthetic stores holding orphans.
+    """
+    import importlib
+
+    from sx.registry import build_registry
+
+    home = tmp_path / "home"
+    home.mkdir()
+    for name in _HOME_MODULES:
+        monkeypatch.setattr(importlib.import_module(name), "home", lambda: home)
+    monkeypatch.setattr("sx.adapters.claude.scratchpad_root", lambda: home / "scratch")
+    monkeypatch.setenv("HOME", str(home))
+    systmp = tmp_path / "systmp"
+    systmp.mkdir()
+    monkeypatch.setenv("TMPDIR", str(systmp))
+    _synthetic_stores(home)
+    adapters, errors = build_registry()
+    assert errors == []
+    return adapters
+
+
+def test_orphan_paths_must_be_inside_declared_store_roots(sandboxed_registry):
     """Every real adapter's orphans must be deletable by its own guard.
 
     The shipped Gemini adapter violated this: 24 orphans, 24 refusals. This
-    invariant makes that class of bug impossible to reintroduce silently.
+    invariant makes that class of bug impossible to reintroduce silently. The
+    stores are synthetic, so each harness that reports orphans is made to
+    report some, and the invariant is never vacuous.
     """
-    from sx.registry import build_registry
-
-    adapters, _ = build_registry()
+    sandbox = Path.home()
+    for adapter in sandboxed_registry:
+        for root in adapter.store_roots():
+            assert root.is_relative_to(sandbox), f"{adapter.name} reaches {root}"
     offenders: list[str] = []
-    for adapter in adapters:
+    reporting: set[str] = set()
+    for adapter in sandboxed_registry:
         if Capability.ORPHANS not in adapter.capabilities or not adapter.available():
             continue
         roots = adapter.store_roots()
         for orphan in adapter.find_orphans():
+            reporting.add(adapter.name)
+            assert orphan.fingerprints is not None, f"{adapter.name}: unfingerprinted orphan"
             for path in orphan.paths:
                 if not is_within(path, roots):
                     offenders.append(f"{adapter.name}: {path}")
     assert offenders == [], f"orphans outside their own store roots: {offenders}"
+    assert {"claude", "gemini", "opencode", "pi", "omp"} <= reporting
 
 
 def test_delete_refuses_a_store_root_itself(tmp_path: Path):

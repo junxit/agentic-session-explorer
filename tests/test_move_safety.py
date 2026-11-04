@@ -54,8 +54,16 @@ def _claude_store(tmp_path: Path, monkeypatch) -> tuple[ClaudeAdapter, Path]:
     folder = tmp_path / ".claude" / "projects" / encode_project_dir(str(OLD))
     folder.mkdir(parents=True)
     transcript = folder / f"{SID}.jsonl"
+    # Compact, as Claude Code writes it: the round-trip test below is only
+    # meaningful if it starts from the bytes a real harness produces.
     transcript.write_text(
-        json.dumps({"type": "user", "cwd": str(OLD), "message": {"content": "hi"}}) + "\n"
+        json.dumps(
+            {"type": "user", "cwd": str(OLD), "message": {"content": "hi ✓"}},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
     )
     return ClaudeAdapter(), transcript
 
@@ -149,6 +157,28 @@ def test_a_rewrite_leaves_no_temporary_files_behind(tmp_path: Path):
     path = tmp_path / "s.jsonl"
     path.write_text(json.dumps({"cwd": "/unrelated"}) + "\n")
     rewrite_jsonl(path, lambda obj: None)
+    assert [p.name for p in tmp_path.iterdir()] == ["s.jsonl"]
+
+
+def test_rewritten_lines_are_compact_like_the_harness_wrote_them(tmp_path: Path):
+    """A re-pointed line keeps the harness's compact form, not Python's spacing."""
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(b'{"type":"user","cwd":"/old/proj","n":1}\n')
+
+    rewrite_jsonl(path, lambda obj: {**obj, "cwd": "/new/proj"})
+
+    assert path.read_bytes() == b'{"type":"user","cwd":"/new/proj","n":1}\n'
+
+
+def test_a_lone_surrogate_survives_a_rewrite(tmp_path: Path):
+    """A truncated emoji must not abort the move, and is escaped as JS escapes it."""
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(b'{"cwd":"/old/proj","text":"cut \\ud83d off \xe2\x9c\x93"}\n')
+
+    changed, error = rewrite_jsonl(path, lambda obj: {**obj, "cwd": "/new/proj"})
+
+    assert (changed, error) == (1, None)
+    assert path.read_bytes() == b'{"cwd":"/new/proj","text":"cut \\ud83d off \xe2\x9c\x93"}\n'
     assert [p.name for p in tmp_path.iterdir()] == ["s.jsonl"]
 
 

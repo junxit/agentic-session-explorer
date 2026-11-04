@@ -30,6 +30,7 @@ from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
+from ..fsguard import MISSING, project_state
 from ..model import (
     Capability,
     DeleteResult,
@@ -135,6 +136,7 @@ class OpencodeAdapter(HarnessAdapter):
     capabilities = (
         Capability.BROWSE | Capability.ORPHANS | Capability.DELETE | Capability.MOVE
     )
+    fingerprints_orphans = True
 
     # --- paths -----------------------------------------------------------
 
@@ -206,6 +208,10 @@ class OpencodeAdapter(HarnessAdapter):
         Internal sub-agent sessions (those with a non-null ``parent_id``) are
         skipped. The full transcript is left for :meth:`load`.
 
+        Every row is read, and the connection closed, before the first session
+        is yielded: a caller that stops early — ``next(iter(discover()))`` —
+        must not leave the database open until the generator is collected.
+
         Yields:
             A :class:`Session` for each top-level opencode session.
         """
@@ -218,8 +224,9 @@ class OpencodeAdapter(HarnessAdapter):
                 "FROM session ORDER BY time_updated DESC"
             ).fetchall()
         except sqlite3.Error:
-            con.close()
             return
+        finally:
+            con.close()
 
         for row in rows:
             try:
@@ -231,7 +238,6 @@ class OpencodeAdapter(HarnessAdapter):
             except (sqlite3.Error, KeyError, IndexError):
                 continue
             yield session
-        con.close()
 
     def _session_from_row(self, row: sqlite3.Row) -> Session:
         """Build a metadata-only :class:`Session` from a ``session`` row."""
@@ -269,7 +275,9 @@ class OpencodeAdapter(HarnessAdapter):
             message_count=None,
             size_bytes=size,
             paths=[sidecar],
-            is_orphan=bool(directory) and not Path(directory).exists(),
+            # Only a directory definitely gone makes an orphan: one that cannot
+            # be checked (an unmounted volume, an unreadable parent) is unknown.
+            is_orphan=bool(directory) and project_state(directory) == MISSING,
         )
 
     # --- loading ---------------------------------------------------------
@@ -404,6 +412,34 @@ class OpencodeAdapter(HarnessAdapter):
                 )
             )
         return orphans
+
+    def _orphan_revalidation(self, orphan: Orphan) -> dict[Path, str]:
+        """Refuse a stray sidecar whose session row exists now, or cannot be checked.
+
+        Args:
+            orphan: The orphan about to be deleted.
+
+        Returns:
+            Path -> refusal reason, for the paths that must stay.
+        """
+        if orphan.kind is not OrphanKind.STRAY_TEMP:
+            return {}
+        con = self._connect_ro()
+        if con is None:
+            reason = "cannot read the database to confirm its session is gone (refused)"
+            return dict.fromkeys(orphan.paths, reason)
+        try:
+            live = {row["id"] for row in con.execute("SELECT id FROM session")}
+        except sqlite3.Error:
+            reason = "cannot read the database to confirm its session is gone (refused)"
+            return dict.fromkeys(orphan.paths, reason)
+        finally:
+            con.close()
+        return {
+            path: "its session exists again (refused)"
+            for path in orphan.paths
+            if path.stem in live
+        }
 
     # --- delete (overridden: rows, not the db file) ----------------------
 

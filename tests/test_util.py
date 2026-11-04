@@ -4,7 +4,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sx.util import human_size, is_within, iter_jsonl, parse_ts
+from sx.util import human_size, is_within, iter_jsonl, parse_ts, rewrite_jsonl, sanitize_text
+
+
+def test_c1_controls_are_neutralized_like_c0_ones():
+    """A C1 control never reaches the terminal: U+009B alone acts as ESC [.
+
+    Each is shown as the sequence it stands for, led by the inert ␛ glyph, and
+    ordinary text around it, tabs and newlines included, is untouched.
+    """
+    raw = "a\u009b31mb\u009d0;title\u009c\tc\n\u0085d"
+    assert sanitize_text(raw) == "a␛[31mb␛]0;title␛\\\tc\n␛Ed"
+    assert sanitize_text("\x1b[2J\x07") == "␛[2J␇"
+    assert sanitize_text("é ✓  ") == "é ✓  "
 
 
 def test_human_size_units():
@@ -51,6 +63,26 @@ def test_iter_jsonl_skips_blank_and_malformed(tmp_path: Path):
     )
     objs = list(iter_jsonl(f))
     assert objs == [{"a": 1}, {"b": 2}]
+
+
+def test_deeply_nested_lines_are_skipped_not_fatal(tmp_path: Path):
+    """A line nested past the parser's limit is skipped, not raised.
+
+    ``json`` raises :class:`RecursionError` for it, which is not a
+    ``ValueError`` — uncaught, one crafted line aborted loading a transcript
+    and left a move's temporary file behind.
+    """
+    nested = "[" * 200_000 + "]" * 200_000
+    f = tmp_path / "deep.jsonl"
+    original = f'{{"cwd":"/old"}}\n{nested}\n'.encode()
+    f.write_bytes(original)
+
+    assert list(iter_jsonl(f)) == [{"cwd": "/old"}]
+
+    changed, error = rewrite_jsonl(f, lambda obj: {**obj, "cwd": "/new"})
+    assert (changed, error) == (1, None)
+    assert f.read_bytes() == original.replace(b"/old", b"/new")
+    assert [p.name for p in tmp_path.iterdir()] == ["deep.jsonl"]
 
 
 def test_iter_jsonl_missing_file(tmp_path: Path):

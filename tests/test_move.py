@@ -174,6 +174,38 @@ def test_claude_stray_session_moves_individually_with_its_sidecar(tmp_path, monk
     assert result.note is not None and "individually" in result.note
 
 
+def test_claude_move_leaves_a_folder_shared_with_a_colliding_project(tmp_path, monkeypatch):
+    """``/old/a/b`` and ``/old/a-b`` share one folder; moving one must not drag the other.
+
+    Regression: the whole folder used to be relocated because its name matched
+    the project being moved, carrying the other project's transcript and the
+    shared ``memory/`` into a folder named for an unrelated directory — where
+    Claude Code, run in ``/old/a-b``, would never find them again.
+    """
+    monkeypatch.setattr(claude_mod, "home", lambda: tmp_path)
+    moving, other = Path("/old/a/b"), "/old/a-b"
+    assert encode_project_dir(moving) == encode_project_dir(other)
+    projects = tmp_path / ".claude" / "projects"
+    folder = projects / encode_project_dir(moving)
+    other_sid = "11111111-2222-3333-4444-555555555555"
+    _write(folder / f"{SID}.jsonl", [{"type": "user", "cwd": str(moving)}])
+    (folder / SID).mkdir()
+    _write(folder / f"{other_sid}.jsonl", [{"type": "user", "cwd": other}])
+    (folder / "memory").mkdir()
+    (folder / "memory" / "MEMORY.md").write_text("# shared\n")
+
+    adapter = ClaudeAdapter()
+    _, result = _move(adapter, old=moving, new=Path("/new/c"))
+
+    destination = projects / encode_project_dir("/new/c")
+    assert _cwds(destination / f"{SID}.jsonl") == ["/new/c"]
+    assert (destination / SID).is_dir()
+    assert _cwds(folder / f"{other_sid}.jsonl") == [other]
+    assert (folder / "memory" / "MEMORY.md").read_text() == "# shared\n"
+    assert not (destination / "memory").exists()
+    assert result.note is not None and "another project" in result.note
+
+
 def test_claude_correlated_paths_include_the_session_sidecar(tmp_path, monkeypatch):
     """Deleting a session must take its ``<session-id>/`` directory with it."""
     adapter = _claude_home(tmp_path, monkeypatch)

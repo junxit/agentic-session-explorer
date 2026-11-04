@@ -14,8 +14,10 @@ from pathlib import Path
 
 # C0 control characters and DEL, excluding tab (\x09) and newline (\x0a) which
 # are legitimate transcript content. Carriage return is included: it enables
-# line-overwriting tricks.
-_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+# line-overwriting tricks. C1 controls (U+0080-U+009F) are included too: some
+# terminals act on them, and U+009B on its own is a control sequence
+# introducer, the same as ESC [.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 # Claude Code's own config-home override. When set it replaces ``~/.claude``
 # wholesale, and ``.claude.json`` moves inside it.
@@ -23,10 +25,18 @@ CLAUDE_CONFIG_ENV = "CLAUDE_CONFIG_DIR"
 
 
 def _control_marker(match: re.Match[str]) -> str:
-    """Map a control character to its visible Unicode Control Pictures glyph."""
+    """Map a control character to a visible, inert stand-in.
+
+    A C0 control becomes its Unicode Control Pictures glyph (ESC → ␛,
+    BEL → ␇) and DEL becomes ␡. A C1 control has no glyph of its own, so it is
+    shown as the 7-bit sequence it stands for, led by the inert ␛ glyph:
+    U+009B becomes ``␛[``.
+    """
     code = ord(match.group())
     if code == 0x7F:
         return "␡"  # ␡
+    if code >= 0x80:
+        return "␛" + chr(code - 0x40)  # C1: ESC Fe, e.g. CSI → ␛[
     return chr(0x2400 + code)  # ␀ … ␟ — e.g. ESC → ␛, BEL → ␇
 
 
@@ -38,14 +48,16 @@ def sanitize_text(text: str) -> str:
     unsanitized transcript can drive the user's terminal when merely *viewed*:
     set the window title, rewrite the clipboard via OSC 52, or clear the screen.
 
-    Control characters are replaced with visible, inert glyphs rather than
-    dropped, so the transcript still shows that something was there.
+    Control characters, C0 and C1 alike, are replaced with visible, inert
+    glyphs rather than dropped, so the transcript still shows that something
+    was there.
 
     Args:
         text: Untrusted text from a session transcript.
 
     Returns:
-        The text with control characters replaced by Control Pictures glyphs.
+        The text with every control character but tab and newline replaced by
+        an inert stand-in.
     """
     if not text:
         return text
@@ -182,7 +194,9 @@ def iter_jsonl(path: Path) -> Iterator[dict]:
                     continue
                 try:
                     obj = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
+                except (json.JSONDecodeError, ValueError, RecursionError):
+                    # RecursionError is not a ValueError: a pathologically
+                    # nested line would otherwise abort the whole read.
                     continue
                 if isinstance(obj, dict):
                     yield obj
@@ -392,30 +406,355 @@ class _Drop:
 #: (replace it), so a transform can re-point, drop, and keep in one pass.
 DROP = _Drop()
 
+#: A UTF-16 surrogate code point. ``json.loads`` pairs up escaped surrogate
+#: pairs, so any surrogate left in a decoded string is a lone one.
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def dumps_record(obj: object) -> bytes:
+    """Serialize one JSONL record the way the harnesses themselves write it.
+
+    Every harness ``sx`` supports writes compact JSON — ``JSON.stringify`` in
+    the Node-based ones, ``serde_json`` in Codex — with no space after ``,`` or
+    ``:``. Python's defaults add both, so a rewritten line would come back
+    longer than the harness wrote it and an inverse move could not restore the
+    original bytes.
+
+    Lone surrogates (a truncated emoji in tool output, say) are escaped as
+    ``\\udxxx``, which is also what ``JSON.stringify`` emits. Left raw they
+    cannot be encoded as UTF-8 at all, and the rewrite would fail.
+
+    Args:
+        obj: The record to serialize.
+
+    Returns:
+        The UTF-8 encoded line, without a line terminator.
+    """
+    return _dumps_text(obj).encode("utf-8")
+
+
+def _dumps_text(obj: object) -> str:
+    """Serialize a JSON value as :func:`dumps_record` does, as text.
+
+    Args:
+        obj: The value to serialize.
+
+    Returns:
+        The compact JSON text, with lone surrogates escaped.
+    """
+    text = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    return _SURROGATE_RE.sub(lambda m: f"\\u{ord(m.group()):04x}", text)
+
+
+#: JSON's insignificant whitespace: the four characters :mod:`json` skips.
+_WS_RE = re.compile(r"[ \t\n\r]*")
+
+#: The C scanner behind :func:`json.loads`. Given a string and an index, it
+#: parses the one value that starts there and returns it with the index just
+#: past it, so the splicer can never disagree with the parser about where a
+#: string, number or nested value ends.
+_scan_value = json.JSONDecoder().scan_once
+
+
+class _ObjectEdit:
+    """The key-level changes a transform made to one JSON object.
+
+    Attributes:
+        replace: Keys whose value changed, mapped to the new value.
+        delete: Keys the transform removed.
+        add: Keys the transform added, with their values, in insertion order.
+    """
+
+    __slots__ = ("add", "delete", "replace")
+
+    def __init__(self) -> None:
+        """Start with no changes."""
+        self.replace: dict[str, object] = {}
+        self.delete: set[str] = set()
+        self.add: list[tuple[str, object]] = []
+
+
+def _same(a: object, b: object) -> bool:
+    """Return True if two decoded JSON values would serialize identically.
+
+    Stricter than ``==``, which holds ``1 == 1.0 == True`` and ``0.0 == -0.0``:
+    each of those pairs is written differently, so a value changed that way
+    must count as changed.
+
+    Args:
+        a: A value decoded from the original line.
+        b: The value the transform put in its place.
+
+    Returns:
+        True if ``b`` can keep ``a``'s original bytes.
+    """
+    if a is b:
+        return True
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return len(a) == len(b) and all(
+            key_a == key_b and _same(value_a, value_b)
+            for (key_a, value_a), (key_b, value_b) in zip(a.items(), b.items())
+        )
+    if isinstance(a, list):
+        return len(a) == len(b) and all(map(_same, a, b))
+    if isinstance(a, float):
+        return repr(a) == repr(b)  # tells -0.0 from 0.0; NaN matches itself
+    return a == b
+
+
+def _diff_object(
+    old: dict, new: dict, path: tuple[str, ...], edits: dict[tuple[str, ...], _ObjectEdit]
+) -> bool:
+    """Record the key-level edits that turn ``old`` into ``new``.
+
+    Objects are compared key by key and recursed into; any other value,
+    arrays included, is compared whole. Edits are filed under the path of the
+    object they apply to, ``()`` being the record itself.
+
+    Args:
+        old: An object as decoded from the original line.
+        new: The object the transform returned in its place.
+        path: The keys leading from the record to ``old``.
+        edits: Collects the edits, keyed by object path (mutated in place).
+
+    Returns:
+        False if key edits cannot express the change because ``new`` reorders
+        ``old``'s keys or adds a key ahead of one it kept. The caller then
+        replaces the object whole; nothing is recorded for it.
+    """
+    added = [key for key in new if key not in old]
+    if [key for key in old if key in new] + added != list(new):
+        return False
+    edit = _ObjectEdit()
+    for key, before in old.items():
+        if key not in new:
+            edit.delete.add(key)
+            continue
+        after = new[key]
+        if before is after:
+            continue
+        if isinstance(before, dict) and isinstance(after, dict):
+            if not _diff_object(before, after, (*path, key), edits):
+                edit.replace[key] = after
+        elif not _same(before, after):
+            edit.replace[key] = after
+    edit.add = [(key, new[key]) for key in added]
+    if edit.replace or edit.delete or edit.add:
+        edits[path] = edit
+    return True
+
+
+def _queue_edits(
+    members: list[tuple[str, int, int, int]],
+    close: int,
+    edit: _ObjectEdit,
+    splices: list[tuple[int, int, str]],
+) -> bool:
+    """Turn one object's edits into splices of the original text.
+
+    A replaced value is overwritten in place. A deleted key goes with its value
+    and exactly one comma: the one before it, or the one after it when it leads
+    the object, or none when nothing else is left. An added key goes at the end
+    of the object, which is where JavaScript's insertion order puts it.
+
+    Args:
+        members: The object's members in text order, each as ``(key, key
+            start, value start, value end)``.
+        close: The index of the object's closing brace.
+        edit: The changes to make.
+        splices: Collects ``(start, end, text)`` splices (mutated in place).
+
+    Returns:
+        False if an edit names a key the text does not hold.
+    """
+    where = {member[0]: index for index, member in enumerate(members)}
+    if any(key not in where for key in (*edit.replace, *edit.delete)):
+        return False
+    for key, value in edit.replace.items():
+        _, _, value_start, value_end = members[where[key]]
+        splices.append((value_start, value_end, _dumps_text(value)))
+    gone = {where[key] for key in edit.delete}
+    kept = [index for index in range(len(members)) if index not in gone]
+    if gone and not kept:
+        splices.append((members[0][1], members[-1][3], ""))
+    elif gone:
+        first = kept[0]
+        if first:
+            # The leading run goes up to the first survivor, taking the comma
+            # after each deleted member.
+            splices.append((members[0][1], members[first][1], ""))
+        for index in sorted(gone):
+            if index > first:
+                # From the end of the previous value: the comma before it.
+                splices.append((members[index - 1][3], members[index][3], ""))
+    if edit.add:
+        pairs = ",".join(f"{_dumps_text(key)}:{_dumps_text(value)}" for key, value in edit.add)
+        if kept:
+            end = members[kept[-1]][3]
+            splices.append((end, end, f",{pairs}"))
+        else:
+            splices.append((close, close, pairs))
+    return True
+
+
+def _splice_record(text: str, old: dict, new: object) -> str | None:
+    """Rewrite only the values that differ between ``old`` and ``new``.
+
+    ``old`` is the record decoded from ``text``. Every byte outside the values
+    the transform changed is kept, so numbers keep the form their writer gave
+    them (``1.5e-7`` rather than Python's ``1.5e-07``), escapes stay escaped
+    and spacing stays as it was.
+
+    Args:
+        text: The original line, decoded, without its terminator.
+        old: The record decoded from ``text``.
+        new: The record the transform returned.
+
+    Returns:
+        The spliced line, or ``None`` if the edits cannot be placed: ``new`` is
+        not an object or reorders the record's own keys (a nested object that
+        is reordered is replaced whole instead), an object on an edit's path
+        holds a duplicate key, or the nesting is deeper than this recursion
+        allows.
+    """
+    if not isinstance(new, dict):
+        return None
+    edits: dict[tuple[str, ...], _ObjectEdit] = {}
+    descend: set[tuple[str, ...]] = set()
+    splices: list[tuple[int, int, str]] = []
+    placed: set[tuple[str, ...]] = set()
+
+    def walk(start: int, path: tuple[str, ...]) -> int | None:
+        """Map the object at ``start``, queue its edits, return the index past it."""
+        members: list[tuple[str, int, int, int]] = []
+        seen: set[str] = set()
+        pos = _WS_RE.match(text, start + 1).end()
+        close = pos if text.startswith("}", pos) else None
+        while close is None:
+            if not text.startswith('"', pos):
+                return None
+            key, after_key = _scan_value(text, pos)
+            if key in seen:
+                return None  # which duplicate counts is the parser's call, not ours
+            seen.add(key)
+            colon = _WS_RE.match(text, after_key).end()
+            if not text.startswith(":", colon):
+                return None
+            value_start = _WS_RE.match(text, colon + 1).end()
+            child = (*path, key)
+            if child in descend and text.startswith("{", value_start):
+                value_end = walk(value_start, child)
+                if value_end is None:
+                    return None
+            else:
+                _, value_end = _scan_value(text, value_start)
+            members.append((key, pos, value_start, value_end))
+            pos = _WS_RE.match(text, value_end).end()
+            if text.startswith(",", pos):
+                pos = _WS_RE.match(text, pos + 1).end()
+            elif text.startswith("}", pos):
+                close = pos
+            else:
+                return None
+        edit = edits.get(path)
+        if edit is not None:
+            if not _queue_edits(members, close, edit, splices):
+                return None
+            placed.add(path)
+        return close + 1
+
+    try:
+        if not _diff_object(old, new, (), edits):
+            return None
+        descend.update(path[:depth] for path in edits for depth in range(1, len(path) + 1))
+        start = _WS_RE.match(text).end()
+        end = walk(start, ()) if text.startswith("{", start) else None
+    except (ValueError, TypeError, StopIteration, RecursionError):
+        return None
+    if end is None or placed != edits.keys() or _WS_RE.match(text, end).end() != len(text):
+        return None
+
+    parts: list[str] = []
+    pos = 0
+    for splice_start, splice_end, replacement in sorted(splices, key=lambda s: s[:2]):
+        if splice_start < pos:
+            return None
+        parts.append(text[pos:splice_start])
+        parts.append(replacement)
+        pos = splice_end
+    parts.append(text[pos:])
+    return "".join(parts)
+
+
+def _rewrite_line(body: bytes, old: dict, new: object) -> bytes:
+    """Return the bytes a line becomes when its record is replaced.
+
+    The splice is checked before it is used: the spliced line must decode to
+    exactly the record the transform returned, down to key order and number
+    types. Anything else — a line the splicer cannot map, or a transform that
+    edited the record it was given in place, which hides its changes from the
+    diff — falls back to serializing the whole record with
+    :func:`dumps_record`, as every rewrite did before.
+
+    Args:
+        body: The original line, without its terminator. It decoded as UTF-8
+            JSON to produce ``old``.
+        old: The record decoded from ``body`` and handed to the transform.
+        new: The record the transform returned.
+
+    Returns:
+        The new line, without a terminator.
+    """
+    expected = dumps_record(new)
+    spliced = _splice_record(body.decode("utf-8"), old, new)
+    if spliced is not None:
+        try:
+            if dumps_record(json.loads(spliced)) == expected:
+                return spliced.encode("utf-8")
+        except (ValueError, RecursionError):
+            pass
+    return expected
+
 
 def rewrite_jsonl(path: Path, transform, *, dry_run: bool = False) -> tuple[int, str | None]:
     """Rewrite a JSONL file record by record, atomically.
 
     The new content is written to a temporary file in the same directory and
     swapped in with :func:`os.replace`, so an interrupted rewrite leaves the
-    original file untouched rather than half-written.
+    original file untouched rather than half-written. The temporary file is
+    removed on every path that does not swap it in, including an exception.
 
-    Two details matter for correctness:
+    Three details matter for correctness:
 
     * **Untransformed lines are copied byte for byte.** :func:`iter_jsonl`
       silently drops lines it cannot parse, which is right for reading and fatal
       for rewriting — a rewrite built on it would quietly delete every
       partially-written record in a live session log.
+    * **Transformed lines change only where the record did.** Each value the
+      transform changed is spliced into the original line, so everything else
+      keeps the bytes its writer chose: ``JSON.stringify`` prints ``1.5e-7``
+      where Python prints ``1.5e-07``, and re-serializing the whole line would
+      stop an inverse move from restoring it. A replaced value is overwritten
+      in place, a deleted key goes with one comma, and an added key goes last
+      in its object. The value itself is written as :func:`dumps_record`
+      writes it, and an object whose keys the transform reorders is written
+      whole the same way. A line the splicer cannot map — a duplicate key,
+      say — or a transform that edits its argument in place instead of
+      returning a new record is re-serialized whole, as before.
     * **The source is re-stat'ed before the swap.** If its size or modification
-      time changed while the rewrite was in progress, the harness appended to it
+      time changed while the rewrite was in progress, the harness wrote to it
       and the new copy is already stale, so it is discarded instead of clobbering
-      those turns.
+      those turns. Size catches an append under a coarse clock; mtime catches a
+      same-size rewrite in place, such as Oh My Pi's fixed-width title slot.
 
     Args:
         path: The JSONL file to rewrite.
         transform: Callable taking one parsed record and returning a replacement
             record, :data:`DROP` to delete the record, or ``None`` to leave that
-            line exactly as it was.
+            line exactly as it was. It should return a new mapping rather than
+            edit the one it is given.
         dry_run: If True, count the records that would change and write nothing.
 
     Returns:
@@ -458,33 +797,33 @@ def rewrite_jsonl(path: Path, transform, *, dry_run: bool = False) -> tuple[int,
                     elif updated is not None:
                         body = raw.rstrip(b"\r\n")
                         ending = raw[len(body):] or b"\n"
-                        replacement = (
-                            json.dumps(updated, ensure_ascii=False).encode("utf-8") + ending
-                        )
+                        replacement = _rewrite_line(body, obj, updated) + ending
                         changed += 1
                 if dropped:
                     continue
                 out.write(replacement if replacement is not None else raw)
 
         if changed == 0:
-            tmp_path.unlink(missing_ok=True)
             return (0, None)
 
         after = path.stat()
         if after.st_size != before.st_size or after.st_mtime_ns != before.st_mtime_ns:
-            tmp_path.unlink(missing_ok=True)
             return (0, "changed while being rewritten (refused)")
 
         os.chmod(tmp_path, stat.S_IMODE(before.st_mode))
         os.replace(tmp_path, path)
+        tmp_path = None  # swapped in: it is the file now, not a leftover
         return (changed, None)
     except OSError as exc:
+        return (0, f"write failed: {exc}")
+    finally:
+        # Unless it was swapped in, the temp file is a full copy of the
+        # transcript; left behind, it would outlive a later delete of the session.
         if tmp_path is not None:
             try:
                 tmp_path.unlink(missing_ok=True)
             except OSError:
                 pass
-        return (0, f"write failed: {exc}")
 
 
 def _parse_record(raw: bytes) -> dict | None:
@@ -502,7 +841,7 @@ def _parse_record(raw: bytes) -> dict | None:
         return None
     try:
         obj = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
         return None
     return obj if isinstance(obj, dict) else None
 

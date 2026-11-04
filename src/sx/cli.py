@@ -35,7 +35,73 @@ from sx.util import (
     claude_config_override,
     claude_config_warning,
     human_size,
+    sanitize_text,
 )
+
+#: Follows the live-session count in a move plan; the TUI says the same.
+LIVE_MOVE_WARNING = (
+    "moving a session its harness still has open breaks it: the next write "
+    "fails, or lands in a header-less fragment at the old path"
+)
+
+
+def _safe(value: object) -> str:
+    """Return ``value`` as one line of text that cannot drive the terminal.
+
+    For anything read off disk — titles, ids, paths, and the notes and reasons
+    that embed them — on its way to stdout. Newlines are folded into spaces so
+    one value cannot pose as several lines of output.
+
+    Args:
+        value: The value, or anything ``str()`` turns into it.
+
+    Returns:
+        The text, control characters replaced by visible glyphs.
+    """
+    return sanitize_text(str(value).replace("\n", " "))
+
+
+def _open_session_caveat(adapter) -> str | None:
+    """Return what an adapter says about moving a session it has open.
+
+    ``open_session_caveat`` is optional on adapters, so it is read with
+    ``getattr``.
+
+    Args:
+        adapter: A harness adapter, or ``None``.
+
+    Returns:
+        The sentence, sanitized and with an initial capital, or ``None``.
+    """
+    caveat = getattr(adapter, "open_session_caveat", None)
+    if not isinstance(caveat, str) or not caveat.strip():
+        return None
+    caveat = _safe(caveat.strip())
+    return caveat[:1].upper() + caveat[1:]
+
+
+def _store_owner(adapter) -> str | None:
+    """Return the harness an adapter has handed its store over to, if any.
+
+    ``store_owner`` is optional on adapters, so it is read with ``getattr``;
+    one that raises counts as no answer.
+
+    Args:
+        adapter: A harness adapter.
+
+    Returns:
+        The other harness's display name, sanitized, or ``None``.
+    """
+    method = getattr(adapter, "store_owner", None)
+    if not callable(method):
+        return None
+    try:
+        owner = method()
+    except Exception:  # noqa: BLE001 - one adapter must not break the CLI
+        return None
+    if not isinstance(owner, str) or not owner.strip():
+        return None
+    return _safe(owner.strip())
 
 
 def _maybe_notify_update() -> None:
@@ -76,6 +142,42 @@ def _print_load_errors(errors: list[tuple[str, str]]) -> None:
         print(f"⚠ adapter {name} failed to load: {err}", file=sys.stderr)
 
 
+def _registry(args: argparse.Namespace) -> tuple[list, list[tuple[str, str]]]:
+    """Return this run's adapter registry, building it on first use.
+
+    ``main`` needs the adapters for their store warnings before a command runs,
+    and most commands need them again; caching the result on ``args`` keeps
+    that to one instantiation per run.
+
+    Args:
+        args: The parsed CLI arguments the registry is cached on.
+
+    Returns:
+        ``(adapters, errors)``, as from :func:`sx.registry.build_registry`.
+    """
+    registry = getattr(args, "registry", None)
+    if registry is None:
+        registry = build_registry()
+        args.registry = registry
+    return registry
+
+
+def _store_lines(method) -> list[str]:
+    """Call an adapter's ``store_notes`` or ``store_warnings``, never raising.
+
+    Args:
+        method: The bound method to call.
+
+    Returns:
+        Its lines, sanitized for the terminal. A check that raises is reported
+        as a line of its own rather than aborting the command.
+    """
+    try:
+        return [sanitize_text(str(line)) for line in method()]
+    except Exception as exc:  # noqa: BLE001 - one adapter must not break the CLI
+        return [f"store check failed: {exc!r}"]
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     """Handle ``sx list``: print discovered sessions grouped by harness/project.
 
@@ -85,7 +187,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     Returns:
         Process exit code.
     """
-    adapters, errors = build_registry()
+    adapters, errors = _registry(args)
     _print_load_errors(errors)
 
     total = 0
@@ -117,12 +219,13 @@ def cmd_list(args: argparse.Namespace) -> int:
         for project in sorted(groups):
             sessions_in_project = sorted(groups[project], key=_sort_key, reverse=True)
             flag = "  ⚠ orphan" if any(s.is_orphan for s in sessions_in_project) else ""
-            print(f"  {project}{flag}")
+            # Projects, ids and titles are all read from the session files.
+            print(f"  {_safe(project)}{flag}")
             for session in sessions_in_project:
                 count = "?" if session.message_count is None else str(session.message_count)
-                short_id = session.session_id[:8]
+                short_id = _safe(session.session_id[:8])
                 size = human_size(session.size_bytes)
-                title = (session.title or "").replace("\n", " ").strip()
+                title = _safe(session.title or "").strip()
                 if len(title) > 60:
                     title = title[:57] + "..."
                 print(
@@ -141,14 +244,19 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_harnesses(args: argparse.Namespace) -> int:
     """Handle ``sx harnesses``: show every known harness and its status.
 
+    After the list come each adapter's notes about where its store was found,
+    and its warnings about the store, marked ``⚠``. A harness that handed its
+    store over to another one names the owner instead of reading as not
+    installed.
+
     Args:
-        args: Parsed CLI arguments (unused).
+        args: Parsed CLI arguments (used only to share the run's registry).
 
     Returns:
         Process exit code.
     """
     _maybe_notify_update()
-    adapters, errors = build_registry()
+    adapters, errors = _registry(args)
     _print_load_errors(errors)
 
     print("Known harnesses:\n")
@@ -159,6 +267,8 @@ def cmd_harnesses(args: argparse.Namespace) -> int:
             status = "dormant (not yet supported)"
         elif installed:
             status = "ready"
+        elif owner := _store_owner(adapter):
+            status = f"store belongs to {owner}"
         else:
             status = "not installed"
         mark = "✓" if (installed and browsable) else ("○" if installed else "·")
@@ -167,31 +277,47 @@ def cmd_harnesses(args: argparse.Namespace) -> int:
     override = claude_config_override()
     if override is not None:
         print(f"\n  Claude Code config home: {override}  ({CLAUDE_CONFIG_ENV})")
+
+    lines: list[str] = []
+    for adapter in adapters:
+        lines += [f"  {adapter.display}: {note}" for note in _store_lines(adapter.store_notes)]
+        lines += [
+            f"  ⚠ {adapter.display}: {warning}"
+            for warning in _store_lines(adapter.store_warnings)
+        ]
+    if lines:
+        print()
+        print("\n".join(lines))
     return 0
 
 
 def _print_move_plan(plans: dict, results: dict, adapters: dict) -> tuple[int, int, int]:
-    """Print the per-harness plan and return ``(files, fields, relocations)``."""
+    """Print the per-harness plan and return ``(files, fields, relocations)``.
+
+    Printed whatever the flags, ``--yes`` included: the live-session warning
+    and each harness's open-session caveat are part of the plan, not of the
+    confirmation that ``--yes`` skips.
+    """
     files = fields = moves = 0
     for name, plan in plans.items():
         result = results[name]
         adapter = adapters.get(name)
-        label = adapter.display if adapter else name
+        label = adapter.display if adapter else _safe(name)
         print(f"\n  {label} ({len(plan.sessions)} session(s))")
+        caveat = _open_session_caveat(adapter)
+        if caveat and plan.sessions:
+            print(f"    ⚠ {caveat}")
         for path in result.rewritten:
-            print(f"    • re-point {path}")
+            print(f"    • re-point {_safe(path)}")
         for src, dst in result.moved:
-            print(f"    • move  {src}")
-            print(f"            → {dst}")
+            print(f"    • move  {_safe(src)}")
+            print(f"            → {_safe(dst)}")
         if result.note:
-            print(f"    • {result.note}")
+            print(f"    • {_safe(result.note)}")
         if plan.live:
-            print(
-                f"    ● {len(plan.live)} live session(s) — rewriting while the "
-                "harness is writing risks losing those turns"
-            )
+            print(f"    ● {len(plan.live)} live session(s) — {LIVE_MOVE_WARNING}")
         for path, reason in result.refused.items():
-            print(f"    ✗ {path} — {reason}")
+            print(f"    ✗ {_safe(path)} — {_safe(reason)}")
         files += len(result.rewritten)
         fields += result.fields_updated
         moves += len(result.moved)
@@ -230,7 +356,9 @@ def cmd_move(args: argparse.Namespace) -> int:
         args: Parsed CLI arguments.
 
     Returns:
-        Process exit code; non-zero when nothing was moved.
+        Process exit code: non-zero when anything was refused, or a dry run
+        predicts a refusal — a script must be able to tell a partial move
+        before it runs one, not only after.
     """
     old = Path(args.source).expanduser()
     new = Path(args.destination).expanduser()
@@ -242,7 +370,7 @@ def cmd_move(args: argparse.Namespace) -> int:
         print("--from and --to are the same directory.", file=sys.stderr)
         return 2
 
-    adapters, errors = build_registry()
+    adapters, errors = _registry(args)
     _print_load_errors(errors)
     by_name = {a.name: a for a in adapters}
     service = MoveService(by_name)
@@ -250,7 +378,7 @@ def cmd_move(args: argparse.Namespace) -> int:
     if args.relocate:
         reason = service.check_relocation(old, new)
         if reason is not None:
-            print(f"The project directory cannot be moved: {reason}", file=sys.stderr)
+            print(f"The project directory cannot be moved: {_safe(reason)}", file=sys.stderr)
             return 1
 
     plans = service.plan(old, new, include_config=args.claude_config)
@@ -272,30 +400,46 @@ def cmd_move(args: argparse.Namespace) -> int:
     )
 
     if args.dry_run:
+        refused = sum(len(result.refused) for result in preview.values())
+        if refused:
+            print(f"\nDry run — nothing was changed; {refused} target(s) would be refused.")
+            return 1
         print("\nDry run — nothing was changed.")
         return 0
 
     live = sum(len(plan.live) for plan in plans.values())
-    if not args.yes and not _confirm_move(strict=bool(live or args.relocate)):
+    strict = bool(live or args.relocate)
+    if not args.yes and not _confirm_move(strict=strict):
         print("Canceled — nothing was changed.")
         return 1
 
     if args.relocate:
         reason = service.relocate_project(old, new)
         if reason is not None:
-            print(f"Nothing was moved — {reason}", file=sys.stderr)
+            print(f"Nothing was moved — {_safe(reason)}", file=sys.stderr)
             return 1
         print(f"Moved {old} → {new}")
 
     plans = service.plan(old, new, include_config=args.claude_config)
-    results = service.move(plans)
-    print(move_summary(results))
-    if service.last_log_error:
+    if not args.yes and not strict and any(plan.live for plan in plans.values()):
+        # Confirmed with a plain yes because nothing was live when the plan was
+        # shown; a session that went live at the prompt needs the phrase.
         print(
-            f"⚠ the move happened but was NOT logged — {service.last_log_error}",
+            "Nothing was moved — a session became active while waiting for "
+            "confirmation. Run the move again.",
             file=sys.stderr,
         )
-    if results and all(result.failed for result in results.values()):
+        return 1
+    results = service.move(plans)
+    print(_safe(move_summary(results)))
+    if service.last_log_error:
+        print(
+            f"⚠ the move happened but was NOT logged — {_safe(service.last_log_error)}",
+            file=sys.stderr,
+        )
+    # Anything refused means the move did not do everything it was asked to,
+    # even when the rest succeeded: a script must be able to tell.
+    if any(result.refused for result in results.values()):
         return 1
     return 0
 
@@ -321,10 +465,11 @@ def cmd_memory(args: argparse.Namespace) -> int:
     for memory in memories:
         if memory.project_path != current:
             current = memory.project_path
-            print(f"\n  {current or '(unknown project)'}")
+            print(f"\n  {_safe(current or '(unknown project)')}")
+        # A memory's name and type are model-written frontmatter.
         print(
-            f"    {memory.name[:38]:<38} {memory.kind:<10} "
-            f"from {memory.origin_label:<18} {human_size(memory.size_bytes):>9}"
+            f"    {_safe(memory.name[:38]):<38} {_safe(memory.kind):<10} "
+            f"from {_safe(memory.origin_label):<18} {human_size(memory.size_bytes):>9}"
         )
     total = sum(m.size_bytes for m in memories)
     print(f"\n{len(memories)} memory file(s) · {human_size(total)}")
@@ -332,7 +477,7 @@ def cmd_memory(args: argparse.Namespace) -> int:
     if args.export:
         dest = Path(args.export).expanduser()
         for memory in memories:
-            print(f"  exported → {export_memory(memory, dest)}")
+            print(f"  exported → {_safe(export_memory(memory, dest))}")
 
     if not args.delete:
         return 0
@@ -340,7 +485,7 @@ def cmd_memory(args: argparse.Namespace) -> int:
     if args.dry_run:
         print("\nWould permanently delete:")
         for memory in memories:
-            print(f"  {memory.path}")
+            print(f"  {_safe(memory.path)}")
         print("\nDry run — nothing was changed.")
         return 0
 
@@ -352,7 +497,7 @@ def cmd_memory(args: argparse.Namespace) -> int:
         print("Canceled — nothing was changed.")
         return 1
 
-    adapters, _ = build_registry()
+    adapters, _ = _registry(args)
     service = DeleteService({a.name: a for a in adapters})
     removed = freed = 0
     refused: list[str] = []
@@ -365,7 +510,7 @@ def cmd_memory(args: argparse.Namespace) -> int:
         freed += result.freed_bytes
     print(f"Deleted {removed} memory file(s) · freed {human_size(freed)}")
     if refused:
-        print(f"⚠ {len(refused)} refused ({refused[0]})", file=sys.stderr)
+        print(f"⚠ {len(refused)} refused ({_safe(refused[0])})", file=sys.stderr)
     return 0 if removed else 1
 
 
@@ -413,7 +558,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_move.add_argument(
         "--dry-run", action="store_true",
-        help="Show exactly what would change and stop.",
+        help="Show exactly what would change and stop; exit 1 if any of it would be refused.",
     )
     p_move.add_argument(
         "--claude-config", action="store_true",
@@ -556,6 +701,12 @@ def main(argv: list[str] | None = None) -> int:
     warning = claude_config_warning()
     if warning:
         print(f"⚠ {warning}", file=sys.stderr)
+    # `sx harnesses` lists these itself, after its table; printing them here
+    # too would show every warning twice.
+    if getattr(args, "command", None) != "harnesses":
+        for adapter in _registry(args)[0]:
+            for line in _store_lines(adapter.store_warnings):
+                print(f"⚠ {adapter.display}: {line}", file=sys.stderr)
 
     # A global --no-update-check disables the check for this run (and any
     # subprocess) by setting the same env var users can set permanently.

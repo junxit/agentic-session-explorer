@@ -9,7 +9,9 @@ no extra dependency is required.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -295,6 +297,9 @@ def test_find_orphans_flags_stray_sidecar(adapter):
     con.close()
     ghost = adapter._store() / "storage" / "session_diff" / "ghost.json"
     ghost.write_text("[]", encoding="utf-8")
+    # Untouched for an hour: a sidecar written in the last 90 seconds is refused.
+    past = time.time() - 3600
+    os.utime(ghost, (past, past))
 
     orphans = adapter.find_orphans()
     assert len(orphans) == 1
@@ -352,3 +357,31 @@ def test_sidecar_within_store_root(adapter):
     sc = adapter._sidecar_path("ses_any")
     assert is_within(sc, adapter.store_roots()) is True
     assert is_within(Path("/etc/hosts"), adapter.store_roots()) is False
+
+
+def test_a_caller_that_stops_after_one_session_leaves_no_connection_open(adapter, monkeypatch):
+    """``next(iter(discover()))`` used to hold the database open until the generator was collected."""
+    con = _connect(adapter)
+    for sid in ("ses_a", "ses_b"):
+        _add_session(con, adapter._store(), sid, directory="/p", title=sid,
+                     turns=[("user", [("text", "hi")])])
+    con.commit()
+    con.close()
+    opened: list[sqlite3.Connection] = []
+    real = adapter._connect_ro
+
+    def tracking() -> sqlite3.Connection | None:
+        """Open the read-only connection as usual, and keep hold of it."""
+        found = real()
+        if found is not None:
+            opened.append(found)
+        return found
+
+    monkeypatch.setattr(adapter, "_connect_ro", tracking)
+    sessions = adapter.discover()
+
+    assert next(sessions).session_id in {"ses_a", "ses_b"}
+    (found,) = opened
+    with pytest.raises(sqlite3.ProgrammingError):
+        found.execute("SELECT 1")  # closed already, with a session still to come
+    sessions.close()

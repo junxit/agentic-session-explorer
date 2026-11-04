@@ -2,21 +2,27 @@
 
 Covers the key rebinding (grouping moved off ``m`` to make room for it), that
 ``m`` actually reaches the move dialog, and that the dialog will not let a move
-be confirmed that the user has not previewed.
+be confirmed that the user has not previewed. Moves are planned from sessions
+discovered when they are planned, never the tree's older list (M6); the plan
+says what moving an open session does (M9) and shows each harness's
+open-session caveat.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 import pytest
-from textual.widgets import Button, Input
+from textual.widgets import Button, Input, Static
 
 from sx.adapters import claude as claude_mod
+from sx.adapters.base import HarnessAdapter
 from sx.adapters.claude import ClaudeAdapter, encode_project_dir
 from sx.grouping import GroupMode
+from sx.model import Capability, Message, MovePlan, MoveResult, Session
 from sx.service import DeleteService, MoveService
 from sx.tui.app import SxApp
 from sx.tui.screens import MoveScreen
@@ -270,3 +276,220 @@ async def test_the_project_cleanup_box_appears_only_on_the_last_session(
         box = app.screen.query_one("#bundle", Checkbox)
         assert box.value is False, "memory must never be pre-selected for deletion"
         assert "memory" in str(box.label)
+
+
+# --- planning from fresh sessions, and what the plan says ---------------------
+
+
+class _Movable(HarnessAdapter):
+    """A harness whose sessions are whatever files its store holds right now.
+
+    Attributes:
+        moved: The session ids of every plan carried out for real.
+    """
+
+    name = "movable"
+    display = "Movable"
+    capabilities = Capability.BROWSE | Capability.DELETE | Capability.MOVE
+
+    def __init__(self, root: Path) -> None:
+        """Start with an empty store at ``root``."""
+        self._root = root
+        self.moved: list[list[str]] = []
+        root.mkdir(parents=True, exist_ok=True)
+
+    def add(self, session_id: str, *, live: bool = False) -> Path:
+        """Write a session file, as the harness would.
+
+        Args:
+            session_id: The session's id, also its file name.
+            live: Leave it freshly written instead of back-dating it.
+
+        Returns:
+            The file's path.
+        """
+        path = self._root / f"{session_id}.jsonl"
+        path.write_text("{}\n", encoding="utf-8")
+        if not live:
+            os.utime(path, (1_700_000_000, 1_700_000_000))
+        return path
+
+    def store_roots(self) -> list[Path]:
+        """The synthetic store."""
+        return [self._root]
+
+    def discover(self):
+        """Yield one session per file in the store now."""
+        for path in sorted(self._root.glob("*.jsonl")):
+            yield Session(
+                harness=self.name,
+                session_id=path.stem,
+                project_path="/old/proj",
+                title=path.stem,
+                modified=datetime(2026, 5, 30, 12, 0),
+                paths=[path],
+            )
+
+    def load(self, session: Session) -> list[Message]:
+        """Nothing to load."""
+        return []
+
+    def plan_move(self, sessions: list[Session], old: Path, new: Path) -> MovePlan:
+        """Plan to rewrite each session's file."""
+        return MovePlan(
+            harness=self.name,
+            old=old,
+            new=new,
+            sessions=list(sessions),
+            rewrites=[s.primary_path for s in sessions if s.primary_path],
+        )
+
+    def move(self, plan: MovePlan, *, dry_run: bool = False) -> MoveResult:
+        """Report the planned rewrites; record the sessions when not a dry run."""
+        if not dry_run:
+            self.moved.append(sorted(s.session_id for s in plan.sessions))
+        return MoveResult(
+            dry_run=dry_run, rewritten=list(plan.rewrites), fields_updated=len(plan.rewrites)
+        )
+
+
+class _Careful(_Movable):
+    """A harness that warns about moving a session it has open, as Pi does."""
+
+    open_session_caveat = "close the session in Movable first"
+
+
+def _wire_movable(app, adapter: HarnessAdapter, tmp_path: Path) -> Session:
+    """Inject ``adapter``, scanning its store now; return the first session."""
+    adapters = {adapter.name: adapter}
+    app._adapters_by_name = adapters
+    app._delete_service = DeleteService(adapters, log_path=tmp_path / "ops.log")
+    app._move_service = MoveService(adapters, log_path=tmp_path / "ops.log")
+    app._sessions_by_harness = {adapter.name: list(adapter.discover())}
+    app._load_errors = []
+    app._live_cache = {}
+    app._populate_tree()
+    return app._sessions_by_harness[adapter.name][0]
+
+
+async def _preview_move(app, pilot, monkeypatch, session: Session, destination: str):
+    """Open the move dialog for ``session`` and preview ``destination``.
+
+    Returns:
+        The dialog and the plan text it shows.
+    """
+    monkeypatch.setattr(app, "_current_session", lambda: session)
+    app.action_move_sessions()
+    for _ in range(10):
+        await pilot.pause()
+        if isinstance(app.screen, MoveScreen):
+            break
+    screen = app.screen
+    assert isinstance(screen, MoveScreen)
+    screen.query_one("#destination", Input).value = destination
+    screen._run_preview()
+    await pilot.pause()
+    return screen, screen.query_one("#preview-body", Static).content.plain
+
+
+def _notices(app) -> list[str]:
+    """Record every notification the app shows from now on."""
+    seen: list[str] = []
+    original = app.notify
+
+    def spy(message, **kwargs):
+        """Record ``message``, then show it as the app would.
+
+        Args:
+            message: The notification text.
+            **kwargs: The rest of :meth:`~textual.app.App.notify`'s arguments.
+
+        Returns:
+            Whatever the real ``notify`` returns.
+        """
+        seen.append(str(message))
+        return original(message, **kwargs)
+
+    app.notify = spy
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_move_includes_sessions_written_after_the_scan(tmp_path, monkeypatch):
+    """The plan shown and the move made both rediscover the sessions (M6).
+
+    Planned from the tree's list, a transcript written since the scan traveled
+    with its folder without being re-pointed.
+    """
+    adapter = _Movable(tmp_path / "store")
+    adapter.add("one")
+    app = SxApp()
+    async with app.run_test(size=(160, 45)) as pilot:
+        await pilot.pause()
+        session = _wire_movable(app, adapter, tmp_path)
+        adapter.add("two")  # written after the tree was scanned
+
+        screen, plan = await _preview_move(app, pilot, monkeypatch, session, "/new/proj")
+        assert "Movable  (2 session(s))" in plan
+
+        adapter.add("three")  # written while the plan was on screen
+        screen.query_one("#confirm", Button).press()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert adapter.moved == [["one", "three", "two"]]
+
+
+@pytest.mark.asyncio
+async def test_the_live_warning_says_moving_an_open_session_breaks_it(tmp_path, monkeypatch):
+    """The warning names the real damage, not a risk of lost turns (M9)."""
+    adapter = _Movable(tmp_path / "store")
+    adapter.add("one", live=True)
+    app = SxApp()
+    async with app.run_test(size=(160, 45)) as pilot:
+        await pilot.pause()
+        session = _wire_movable(app, adapter, tmp_path)
+
+        screen, plan = await _preview_move(app, pilot, monkeypatch, session, "/new/proj")
+        assert (
+            "● 1 live session(s) — moving a session its harness still has open breaks "
+            "it: the next write fails, or lands in a header-less fragment at the old path"
+        ) in plan
+        assert "risks losing those turns" not in plan
+        assert screen.query_one("#confirm-input", Input).display is True
+
+
+@pytest.mark.asyncio
+async def test_the_move_plan_shows_the_open_session_caveat(tmp_path, monkeypatch):
+    """A harness's warning about open sessions is in the plan to confirm."""
+    adapter = _Careful(tmp_path / "store")
+    adapter.add("one")
+    app = SxApp()
+    async with app.run_test(size=(160, 45)) as pilot:
+        await pilot.pause()
+        session = _wire_movable(app, adapter, tmp_path)
+
+        _, plan = await _preview_move(app, pilot, monkeypatch, session, "/new/proj")
+        assert "Movable  (1 session(s))\n  ⚠ Close the session in Movable first\n" in plan
+
+
+@pytest.mark.asyncio
+async def test_a_session_that_went_live_after_the_preview_is_not_moved(tmp_path, monkeypatch):
+    """Confirmed without the phrase, a re-point that finds a live session stops."""
+    adapter = _Movable(tmp_path / "store")
+    path = adapter.add("one")
+    app = SxApp()
+    async with app.run_test(size=(160, 45)) as pilot:
+        await pilot.pause()
+        session = _wire_movable(app, adapter, tmp_path)
+        notices = _notices(app)
+
+        screen, _ = await _preview_move(app, pilot, monkeypatch, session, "/new/proj")
+        assert screen.query_one("#confirm-input", Input).display is False
+        os.utime(path, None)  # the harness writes to it now
+        screen.query_one("#confirm", Button).press()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        assert adapter.moved == []
+        assert any("became active after the preview" in n for n in notices), notices

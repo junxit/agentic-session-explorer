@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
-import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
+from ..fsguard import MISSING, project_state
 from ..model import (
     DeleteResult,
     Message,
@@ -24,10 +25,7 @@ from ..util import (
     dir_size,
     home,
     human_size,
-    is_under,
-    is_within,
     iter_jsonl,
-    mount_unavailable,
     parse_ts,
     repoint,
     rewrite_jsonl,
@@ -35,7 +33,7 @@ from ..util import (
     short_path,
     write_text_atomic,
 )
-from .base import JsonlFolderAdapter
+from .base import EncodedFolderAdapter
 
 # Slash-command / local-command wrappers that can lead a Claude user message
 # (e.g. ``<command-name>/model</command-name>`` or a ``<local-command-caveat>``
@@ -170,7 +168,7 @@ def _decode_folder(name: str) -> str:
     return "/" + stripped.replace("-", "/")
 
 
-class ClaudeAdapter(JsonlFolderAdapter):
+class ClaudeAdapter(EncodedFolderAdapter):
     """Adapter for Claude Code chat sessions.
 
     Sessions live at ``<config home>/projects/<encoded-cwd>/<sessionId>.jsonl``
@@ -600,24 +598,35 @@ class ClaudeAdapter(JsonlFolderAdapter):
         )
         return candidate if candidate.is_dir() else None
 
-    def _folder_cwd(self, session_files: list[Path]) -> str | None:
-        """Return the project directory recorded inside a folder's sessions.
+    def _gone_projects(self, session_files: list[Path]) -> list[str] | None:
+        """Return the projects a folder's sessions record, if every one is gone.
 
         Every session in the folder is consulted, not just the alphabetically
         first one: a single unreadable or truncated file must not decide the fate
-        of the whole folder.
+        of the whole folder, and neither may the first readable one — two
+        projects whose paths encode alike share a folder, and one of them can
+        still be there. A session that records no directory at all cannot be
+        attributed to anyone, so it neither saves nor condemns the folder.
 
         Args:
             session_files: The folder's top-level session files.
 
         Returns:
-            The recorded working directory, or ``None`` if none could be read.
+            The distinct recorded directories when there is at least one and
+            :func:`~sx.fsguard.project_state` calls every one of them missing;
+            ``None`` when any is present or cannot be checked, or none is
+            recorded.
         """
+        gone: list[str] = []
         for path in session_files:
             cwd = self._cwd_from_file(path)
-            if cwd:
-                return cwd
-        return None
+            if not cwd:
+                continue
+            if project_state(cwd) != MISSING:
+                return None
+            if cwd not in gone:
+                gone.append(cwd)
+        return gone or None
 
     def _leftover_reason(self, folder: Path) -> tuple[str, int]:
         """Describe what a folder without top-level sessions actually contains.
@@ -656,15 +665,22 @@ class ClaudeAdapter(JsonlFolderAdapter):
         contains. A folder whose recorded working directory no longer exists is
         reported as :attr:`OrphanKind.DEAD_PROJECT`.
 
-        Artifacts keyed to sessions that no longer exist — scratchpads, task and
-        environment directories, security state — are reported too, grouped by
-        class so one stale class cannot bury the rest.
+        Artifacts keyed to sessions that no longer exist — file history, task
+        and environment directories, security state, but never the scratchpads
+        every Claude config on the account shares — are reported too, grouped
+        by class so one stale class cannot bury the rest.
 
-        Two deliberate abstentions keep real data out of the deletion list:
+        Several deliberate abstentions keep real data out of the deletion list:
         a folder whose working directory cannot be read is never called dead
-        (the lossy folder-name decode is not trusted for this decision), and a
-        directory on an unmounted volume is treated as unavailable rather than
-        gone.
+        (the lossy folder-name decode is not trusted for this decision); a
+        folder is dead only when every directory its sessions record is
+        missing; a directory that cannot be checked — an unmounted volume,
+        a parent ``sx`` may not traverse — is unknown rather than gone (see
+        :func:`~sx.fsguard.project_state`); and nothing is called stale while
+        any part of the session store cannot be read.
+
+        Each orphan is fingerprinted as soon as it is built, so a session
+        written into the folder afterwards makes the delete refuse it.
 
         Returns:
             A list of discovered orphans.
@@ -673,44 +689,87 @@ class ClaudeAdapter(JsonlFolderAdapter):
         orphans: list[Orphan] = self._stale_session_artifacts()
         if not projects.is_dir():
             return orphans
-        for folder in sorted(projects.iterdir()):
+        try:
+            folders = sorted(projects.iterdir())
+        except OSError:
+            return orphans  # nothing in a store that cannot be listed can be judged
+        for folder in folders:
             if not folder.is_dir():
                 continue
             session_files = sorted(folder.glob("*.jsonl"))
             if not session_files:
                 reason, size = self._leftover_reason(folder)
-                orphans.append(
-                    Orphan(
-                        harness=self.name,
-                        kind=OrphanKind.EMPTY,
-                        paths=[folder],
-                        reason=reason,
-                        size_bytes=size,
-                    )
+                orphan = Orphan(
+                    harness=self.name,
+                    kind=OrphanKind.EMPTY,
+                    paths=[folder],
+                    reason=reason,
+                    size_bytes=size,
                 )
+                orphans.extend(self.fingerprint_orphans([orphan]))
                 continue
-            cwd = self._folder_cwd(session_files)
-            if cwd is None:
-                continue  # unknown project directory — never assume it is dead
-            if mount_unavailable(cwd):
-                continue  # volume offline, not deleted
-            if not Path(cwd).exists():
-                orphans.append(
-                    Orphan(
-                        harness=self.name,
-                        kind=OrphanKind.DEAD_PROJECT,
-                        paths=[folder],
-                        reason=f"project directory no longer exists: {cwd}",
-                        size_bytes=dir_size(folder),
-                    )
-                )
+            gone = self._gone_projects(session_files)
+            if gone is None:
+                continue  # present, unknown or unreadable — never assume it is dead
+            reason = (
+                f"project directory no longer exists: {gone[0]}"
+                if len(gone) == 1
+                else "project directories no longer exist: " + ", ".join(gone)
+            )
+            orphan = Orphan(
+                harness=self.name,
+                kind=OrphanKind.DEAD_PROJECT,
+                paths=[folder],
+                reason=reason,
+                size_bytes=dir_size(folder),
+            )
+            orphans.extend(self.fingerprint_orphans([orphan]))
         return orphans
+
+    def _orphan_revalidation(self, orphan: Orphan) -> dict[Path, str]:
+        """Refuse a stale artifact whose session exists again, then ask the base.
+
+        The sessions are listed the way the scan listed them
+        (:meth:`_live_session_ids`): when the store cannot be read in full —
+        it sits behind a link to a volume that is not mounted now, say —
+        every stale artifact is refused, since its session may be there.
+
+        Args:
+            orphan: The orphan about to be deleted.
+
+        Returns:
+            Path -> refusal reason, for the paths that must stay.
+        """
+        refused: dict[Path, str] = {}
+        if orphan.kind is OrphanKind.STALE_SESSION:
+            live = self._live_session_ids()
+            for path in orphan.paths:
+                if live is None:
+                    refused[path] = (
+                        "the session store cannot be read in full, so its session "
+                        "may still exist (refused)"
+                    )
+                    continue
+                found = _UUID_ANYWHERE_RE.search(path.name)
+                if found and found.group(0) in live:
+                    refused[path] = "its session exists again (refused)"
+        for path, reason in super()._orphan_revalidation(orphan).items():
+            refused.setdefault(path, reason)
+        return refused
 
     # --- move ------------------------------------------------------------
 
     def _projects_root(self) -> Path:
         """Return the primary session store (``~/.claude/projects``)."""
         return self._config_dir() / "projects"
+
+    def sessions_root(self) -> Path:
+        """Return the folder holding one directory per project (``projects``)."""
+        return self._projects_root()
+
+    def folder_for(self, project: str) -> str:
+        """Return the project folder name Claude uses for ``project``."""
+        return encode_project_dir(project)
 
     def session_sidecar(self, session: Session) -> Path | None:
         """Return the ``<session-id>/`` directory beside a transcript, if present.
@@ -730,6 +789,11 @@ class ClaudeAdapter(JsonlFolderAdapter):
             return None
         sidecar = path.parent / path.stem
         return sidecar if sidecar.is_dir() else None
+
+    def session_sidecars(self, session: Session) -> list[Path]:
+        """Return the session's ``<session-id>/`` directory, which travels with it."""
+        sidecar = self.session_sidecar(session)
+        return [sidecar] if sidecar is not None else []
 
     def repoint_record(self, obj: dict, old: Path, new: Path) -> dict | None:
         """Re-point a record's ``cwd`` field, leaving everything else alone.
@@ -756,162 +820,12 @@ class ClaudeAdapter(JsonlFolderAdapter):
         replacement["cwd"] = updated
         return replacement
 
-    @staticmethod
-    def _folder_project(folder: Path, candidates: list[str]) -> str | None:
-        """Return the project directory a store folder is named for.
-
-        Folder names are a lossy encoding, so they are never decoded. Instead
-        each candidate directory is *encoded* and compared with the folder name,
-        which is exact.
-
-        Args:
-            folder: A folder directly under ``~/.claude/projects``.
-            candidates: Directories that might have produced the folder name.
-
-        Returns:
-            The matching candidate, or ``None`` when the folder is named for some
-            other directory (a project that was renamed after the folder was
-            created, for instance).
-        """
-        for candidate in candidates:
-            if candidate and encode_project_dir(candidate) == folder.name:
-                return candidate
-        return None
-
-    def plan_move(self, sessions: list[Session], old: Path, new: Path) -> MovePlan:
-        """Plan the rewrite *and* the relocation Claude's layout requires.
-
-        The store encodes the project directory in the folder name, so a move is
-        two operations: re-point every ``cwd`` inside the transcripts, then move
-        the files to the folder the new directory encodes to.
-
-        A folder is relocated whole whenever its name matches the directory it
-        holds — that carries the project's ``memory/`` directory and every
-        session's sidecar without enumerating them. Sessions that sit in a folder
-        named for some other directory are relocated individually, transcript and
-        sidecar together, so nothing is left stranded.
-
-        Args:
-            sessions: Sessions selected for the move.
-            old: The project directory being moved away from.
-            new: The project directory being moved to.
-
-        Returns:
-            A :class:`MovePlan` covering rewrites, relocations and refusals.
-        """
-        plan = super().plan_move(sessions, old, new)
-        root = self._projects_root()
-        roots = self.store_roots()
-
-        by_folder: dict[Path, list[Session]] = {}
-        for session in sessions:
-            path = session.primary_path
-            if path is not None:
-                by_folder.setdefault(path.parent, []).append(session)
-
-        strays = 0
-        for folder, folder_sessions in sorted(by_folder.items()):
-            if folder.parent != root:
-                continue  # nested or unfamiliar layout — rewrite only
-            candidates = [str(old)] + [
-                s.project_path for s in folder_sessions if s.project_path
-            ]
-            implied = self._folder_project(folder, candidates)
-            if implied is not None and is_under(implied, old):
-                target = repoint(implied, old, new)
-                self._plan_relocation(folder, root / encode_project_dir(target), plan, roots)
-                continue
-            for session in folder_sessions:
-                strays += self._plan_session_relocation(session, folder, plan, roots)
-
-        if strays:
-            plan.note = (
-                f"{strays} session(s) live in a folder named for another "
-                "directory and move individually"
-            )
-        return plan
-
-    def _plan_session_relocation(
-        self,
-        session: Session,
-        folder: Path,
-        plan: MovePlan,
-        roots: list[Path],
-    ) -> int:
-        """Plan moving one transcript (and its sidecar) into the new folder.
-
-        Args:
-            session: The session to relocate.
-            folder: The folder currently holding it.
-            plan: The plan to record into.
-            roots: The adapter's store roots, for the containment guard.
-
-        Returns:
-            ``1`` if a relocation was planned, ``0`` if the session is already in
-            the right place.
-        """
-        path = session.primary_path
-        target_dir = repoint(session.project_path or "", plan.old, plan.new)
-        if path is None or target_dir is None:
-            return 0
-        destination = self._projects_root() / encode_project_dir(target_dir)
-        if destination == folder:
-            return 0
-        self._plan_entry(path, destination / path.name, plan, roots)
-        sidecar = self.session_sidecar(session)
-        if sidecar is not None:
-            self._plan_entry(sidecar, destination / sidecar.name, plan, roots)
-        return 1
-
-    def _plan_relocation(
-        self, src: Path, dst: Path, plan: MovePlan, roots: list[Path]
-    ) -> None:
-        """Plan moving a whole project folder, merging when the target exists.
-
-        A destination folder already exists whenever Claude has been run at the
-        new path. Its entries are then merged one by one, and any name already
-        taken is refused rather than overwritten — a move must never destroy a
-        transcript that is already there.
-
-        Args:
-            src: The folder to move.
-            dst: Where it should end up.
-            plan: The plan to record into.
-            roots: The adapter's store roots, for the containment guard.
-        """
-        if src == dst:
-            return
-        if not dst.exists():
-            self._plan_entry(src, dst, plan, roots)
-            return
-        if not dst.is_dir():
-            plan.blocked[dst] = "destination exists and is not a directory (refused)"
-            return
-        try:
-            entries = sorted(src.iterdir())
-        except OSError as exc:
-            plan.blocked[src] = f"cannot read: {exc}"
-            return
-        for entry in entries:
-            self._plan_entry(entry, dst / entry.name, plan, roots)
-
-    @staticmethod
-    def _plan_entry(src: Path, dst: Path, plan: MovePlan, roots: list[Path]) -> None:
-        """Record one ``src -> dst`` relocation, or why it cannot happen."""
-        if not is_within(src, roots) or not is_within(dst, roots):
-            plan.blocked[src] = "outside store root (refused)"
-            return
-        if dst.exists():
-            plan.blocked[src] = f"already exists at destination: {dst} (refused)"
-            return
-        plan.relocations.append((src, dst))
-
     def move(self, plan: MovePlan, *, dry_run: bool = False) -> MoveResult:
-        """Re-point the transcripts, then relocate them to the new folder.
+        """Re-point and relocate the transcripts, then (opt-in) Claude's own state.
 
-        Order matters: the rewrite runs first, while the planned paths still
-        exist where the plan says they do. Relocating first would invalidate
-        every one of them.
+        The rewrite and relocation are shared with every encoded-folder harness;
+        re-pointing ``.claude.json`` and ``history.jsonl`` runs last and only
+        when :attr:`MovePlan.include_config` asks for it.
 
         Args:
             plan: The plan produced by :meth:`plan_move`.
@@ -920,63 +834,10 @@ class ClaudeAdapter(JsonlFolderAdapter):
         Returns:
             A :class:`MoveResult`.
         """
-        result = MoveResult(dry_run=dry_run)
-        result.skipped.update(plan.blocked)
-        if plan.note:
-            result.note = plan.note
-        self._rewrite_all(plan, result, dry_run=dry_run)
-        for src, dst in plan.relocations:
-            self._relocate(src, dst, result, dry_run=dry_run)
-        if not dry_run:
-            self._prune_empty_folders(plan)
+        result = super().move(plan, dry_run=dry_run)
         if plan.include_config:
             self._repoint_config(plan, result, dry_run=dry_run)
         return result
-
-    def _relocate(self, src: Path, dst: Path, result: MoveResult, *, dry_run: bool) -> None:
-        """Move one path, re-checking every guard at the moment of the move."""
-        roots = self.store_roots()
-        if not is_within(src, roots) or not is_within(dst, roots):
-            result.skipped[src] = "outside store root (refused)"
-            return
-        if not src.exists():
-            result.skipped[src] = "does not exist"
-            return
-        if dst.exists():
-            result.skipped[src] = f"already exists at destination: {dst} (refused)"
-            return
-        if dry_run:
-            result.moved.append((src, dst))
-            return
-        try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(dst))
-        except (OSError, shutil.Error) as exc:
-            result.skipped[src] = f"move failed: {exc}"
-            return
-        result.moved.append((src, dst))
-
-    def _prune_empty_folders(self, plan: MovePlan) -> None:
-        """Remove project folders left completely empty by a merge.
-
-        Only a directly-held project folder is considered, and only when it has
-        no entries at all — ``rmdir`` rather than a recursive remove, so anything
-        the move did not relocate keeps the folder alive.
-        """
-        root = self._projects_root()
-        for src, _ in plan.relocations:
-            folder = src.parent
-            if folder.parent != root or not folder.is_dir():
-                continue
-            try:
-                next(folder.iterdir())
-            except StopIteration:
-                try:
-                    folder.rmdir()
-                except OSError:
-                    pass
-            except OSError:
-                continue
 
     # --- optional: Claude's own project state ----------------------------
 
@@ -1171,10 +1032,10 @@ class ClaudeAdapter(JsonlFolderAdapter):
         if folder.is_dir():
             leftovers.paths.append(folder)
             leftovers.size_bytes += dir_size(folder)
-        scratch = scratchpad_root() / encode_project_dir(project)
-        if scratch.is_dir():
-            leftovers.paths.append(scratch)
-            leftovers.size_bytes += dir_size(scratch)
+        # The project's scratchpad folder is not offered: every Claude config
+        # on this account shares the scratchpad root, so it can hold another
+        # config's sessions' scratchpads. Each deleted session's own scratchpad
+        # has already gone with it.
 
         if self._settings_entry(project) is not None:
             leftovers.config_notes.append("Claude settings entry (trust, allowedTools)")
@@ -1259,6 +1120,49 @@ class ClaudeAdapter(JsonlFolderAdapter):
 
     # --- stale artifacts left by sessions that are already gone ----------
 
+    def _live_session_ids(self) -> set[str] | None:
+        """Return the id of every session in the store, or None if unsure.
+
+        Unlike :meth:`session_files`, which silently skips whatever it cannot
+        read, this lists every project folder itself and gives up at the first
+        doubt, so a session out of sight can never make its own artifacts look
+        stale. A store kept behind a symbolic link to a volume that is not
+        mounted is out of sight, not empty: a ``projects`` link that cannot be
+        listed, or a project folder that is a link to something other than a
+        directory, makes the answer unknown, as an unreadable folder does.
+
+        Returns:
+            The session ids; the empty set only when ``projects`` is
+            definitely absent; ``None`` when it, or any entry in it, could not
+            be read.
+        """
+        projects = self._projects_root()
+        try:
+            os.lstat(projects)
+        except FileNotFoundError:
+            return set()  # no store at all, so no sessions
+        except (OSError, ValueError):
+            return None
+        folders: list[str] = []
+        try:
+            with os.scandir(projects) as entries:
+                for entry in entries:
+                    if entry.is_dir():
+                        folders.append(entry.path)
+                    elif entry.is_symlink():
+                        return None  # a project folder whose target is not there now
+        except (OSError, ValueError):
+            return None  # unreadable, or a link to a store that is not there now
+        ids: set[str] = set()
+        for folder in folders:
+            try:
+                with os.scandir(folder) as entries:
+                    names = [entry.name for entry in entries]
+            except (OSError, ValueError):
+                return None
+            ids.update(name[: -len(".jsonl")] for name in names if name.endswith(".jsonl"))
+        return ids
+
     def _stale_session_artifacts(self) -> list[Orphan]:
         """Find artifacts keyed to session ids that no longer exist.
 
@@ -1266,12 +1170,20 @@ class ClaudeAdapter(JsonlFolderAdapter):
         sampled machine has 350 stale ``session-env`` directories alone, which
         would bury every other finding in the cleanup screen.
 
+        Nothing is offered unless every project folder could be read: an
+        artifact is stale only when its session is definitely gone, and a
+        folder that cannot be listed — or a store behind a link to a volume
+        that is not mounted — may hold that session (see
+        :meth:`_live_session_ids`).
+
         Returns:
             A list of :attr:`OrphanKind.STALE_SESSION` orphans.
         """
-        live = {path.stem for path in self.session_files()}
+        live = self._live_session_ids()
+        if live is None:
+            return []
         base = self._config_dir()
-        # Labelled with the store actually in use: under CLAUDE_CONFIG_DIR a
+        # Labeled with the store actually in use: under CLAUDE_CONFIG_DIR a
         # hardcoded "~/.claude/…" would name a directory nothing was read from.
         label = short_path(base)
         groups: list[tuple[str, list[Path]]] = []
@@ -1298,23 +1210,12 @@ class ClaudeAdapter(JsonlFolderAdapter):
             if stale:
                 groups.append((f"{label}/security", stale))
 
-        scratch_root = scratchpad_root()
-        if scratch_root.is_dir():
-            stale = []
-            try:
-                project_dirs = sorted(d for d in scratch_root.iterdir() if d.is_dir())
-            except OSError:
-                project_dirs = []
-            for project_dir in project_dirs:
-                try:
-                    entries = sorted(project_dir.iterdir())
-                except OSError:
-                    continue
-                stale.extend(
-                    e for e in entries if _UUID_RE.match(e.name) and e.name not in live
-                )
-            if stale:
-                groups.append((str(scratch_root), stale))
+        # Scratchpads under /private/tmp/claude-<uid> are deliberately not
+        # offered. That root follows the user id, not the config home, so every
+        # Claude config on the account (CLAUDE_CONFIG_DIR, another HOME) shares
+        # it: a scratchpad whose session this config does not know may belong to
+        # another config's session, idle or open. A session's own scratchpad
+        # still goes with it, built from its id; macOS clears the rest at boot.
 
         orphans: list[Orphan] = []
         for label, paths in groups:
@@ -1331,4 +1232,4 @@ class ClaudeAdapter(JsonlFolderAdapter):
                     size_bytes=size,
                 )
             )
-        return orphans
+        return self.fingerprint_orphans(orphans)

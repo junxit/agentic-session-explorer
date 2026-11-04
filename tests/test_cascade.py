@@ -230,7 +230,11 @@ def test_project_cleanup_removes_memory_folder_and_settings(tmp_path, monkeypatc
 
     folder = tmp_path / ".claude" / "projects" / encode_project_dir(PROJECT)
     assert not folder.exists()
-    assert not (tmp_path / "scratch" / encode_project_dir(PROJECT)).exists()
+    # The project's scratchpad folder stays: every Claude config on the account
+    # shares the scratchpad root. The deleted session's own scratchpad went
+    # with the session.
+    scratch = tmp_path / "scratch" / encode_project_dir(PROJECT)
+    assert scratch.is_dir() and not (scratch / SID).exists()
     config = json.loads((tmp_path / ".claude.json").read_text())
     assert config["projects"] == {}
     history = (tmp_path / ".claude" / "history.jsonl").read_text()

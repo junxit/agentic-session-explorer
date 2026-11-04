@@ -18,6 +18,8 @@ _REAL_ADAPTERS: list[tuple[str, str]] = [
     ("sx.adapters.codex", "CodexAdapter"),
     ("sx.adapters.gemini", "GeminiAdapter"),
     ("sx.adapters.opencode", "OpencodeAdapter"),
+    ("sx.adapters.pi", "PiAdapter"),
+    ("sx.adapters.omp", "OmpAdapter"),
 ]
 
 

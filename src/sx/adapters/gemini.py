@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import errno
 import json
+import os
+import stat
 from collections.abc import Iterator
 from pathlib import Path
 
+from ..fsguard import MISSING, project_state
 from ..model import (
     DeleteResult,
     Message,
@@ -342,11 +346,41 @@ class GeminiAdapter(JsonlFolderAdapter):
             session.created = parse_ts(first.get("startTime"))
         return session
 
+    @staticmethod
+    def _marker_target(hash_dir: Path) -> tuple[str, str | None]:
+        """Read a hash directory's ``.project_root`` marker, telling absence from doubt.
+
+        Args:
+            hash_dir: A directory under ``tmp/`` or ``history/``.
+
+        Returns:
+            ``("absent", None)`` when there is no marker, ``("empty", None)``
+            when it holds nothing, ``("unreadable", None)`` when it exists but
+            cannot be read as a file, else ``("ok", project)``.
+        """
+        marker = hash_dir / ".project_root"
+        try:
+            info = os.lstat(marker)
+        except OSError as exc:
+            if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+                return "absent", None
+            return "unreadable", None
+        if not stat.S_ISREG(info.st_mode):
+            return "unreadable", None
+        try:
+            target = marker.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            return "unreadable", None
+        return ("ok", target) if target else ("empty", None)
+
     def find_orphans(self) -> list[Orphan]:
         """Find orphaned Gemini artifacts.
 
-        A hash directory with a ``chats`` subdirectory but a missing or dangling
-        ``.project_root`` marker is reported as :attr:`OrphanKind.DEAD_PROJECT`.
+        A hash directory with a ``chats`` subdirectory whose ``.project_root``
+        marker is missing or empty, or names a directory that is definitely
+        gone, is reported as :attr:`OrphanKind.DEAD_PROJECT`. A marker that
+        cannot be read, or a directory that cannot be checked (see
+        :func:`~sx.fsguard.project_state`), is never taken for a dead project.
         Leftover ``projects.json.*.tmp`` files are reported as
         :attr:`OrphanKind.STRAY_TEMP`.
 
@@ -364,16 +398,10 @@ class GeminiAdapter(JsonlFolderAdapter):
                     continue
                 if not (hash_dir / "chats").is_dir():
                     continue
-                marker = hash_dir / ".project_root"
-                target = None
-                if marker.is_file():
-                    try:
-                        target = marker.read_text(encoding="utf-8").strip()
-                    except (OSError, FileNotFoundError):
-                        target = None
-                if not target:
+                state, target = self._marker_target(hash_dir)
+                if state in ("absent", "empty"):
                     reason = "missing or empty .project_root marker"
-                elif not Path(target).exists():
+                elif state == "ok" and project_state(target) == MISSING:
                     reason = f"project directory no longer exists: {target}"
                 else:
                     continue
@@ -397,6 +425,28 @@ class GeminiAdapter(JsonlFolderAdapter):
                 )
             )
         return orphans
+
+    def _orphan_revalidation(self, orphan: Orphan) -> dict[Path, str]:
+        """Refuse a dead project's directory whose project is back, or now in doubt.
+
+        Args:
+            orphan: The orphan about to be deleted.
+
+        Returns:
+            Path -> refusal reason, for the paths that must stay.
+        """
+        refused: dict[Path, str] = {}
+        if orphan.kind is not OrphanKind.DEAD_PROJECT:
+            return refused
+        for hash_dir in orphan.paths:
+            state, target = self._marker_target(hash_dir)
+            if state == "unreadable":
+                refused[hash_dir] = "cannot read its .project_root marker (refused)"
+            elif state == "ok" and project_state(target) != MISSING:
+                refused[hash_dir] = (
+                    f"its project directory is there, or cannot be checked: {target} (refused)"
+                )
+        return refused
 
     # --- move ------------------------------------------------------------
 
