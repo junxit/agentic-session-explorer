@@ -15,6 +15,7 @@ from sx import update as up
 
 # --- version parsing / comparison -----------------------------------------
 
+
 @pytest.mark.parametrize(
     "text,expected",
     [
@@ -48,6 +49,7 @@ def test_is_newer(latest, current, result):
 
 # --- opt-out ---------------------------------------------------------------
 
+
 def test_opted_out(monkeypatch):
     monkeypatch.setenv("SX_NO_UPDATE_CHECK", "1")
     assert up.opted_out() is True
@@ -62,6 +64,7 @@ def test_not_opted_out_by_default(monkeypatch):
 
 
 # --- caching behavior ------------------------------------------------------
+
 
 @pytest.fixture
 def cache_dir(tmp_path, monkeypatch):

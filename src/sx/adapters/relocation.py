@@ -57,9 +57,9 @@ class Namespace:
         if directory not in self._names:
             try:
                 names: set[str] | frozenset | None = set(os.listdir(directory))
-            except (FileNotFoundError, NotADirectoryError):
+            except FileNotFoundError, NotADirectoryError:
                 names = None
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 names = self.UNREADABLE
             self._names[directory] = names
             self._original[directory] = set(names) if isinstance(names, set) else set()
@@ -101,7 +101,7 @@ class Namespace:
             return False
         try:
             return stat.S_ISDIR(os.lstat(path).st_mode)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return False
 
     def preexisting(self, directory: Path) -> set[str]:
@@ -229,7 +229,7 @@ def read_records(path: Path) -> list[dict]:
                     continue
                 try:
                     obj = json.loads(body.decode("utf-8"))
-                except (UnicodeDecodeError, ValueError, RecursionError):
+                except UnicodeDecodeError, ValueError, RecursionError:
                     continue
                 if isinstance(obj, dict):
                     found.append(obj)
@@ -289,7 +289,7 @@ def same_entry(src: Path, dst: Path) -> bool:
         if not os.path.samestat(os.stat(src.parent), os.stat(dst.parent)):
             return False  # two links to one file, in two folders
         names = set(os.listdir(dst.parent))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     return src.name == dst.name or not {src.name, dst.name} <= names
 
@@ -418,11 +418,11 @@ def landed(src: Path, dst: Path) -> bool:
         before = os.lstat(src)
     except FileNotFoundError:
         return os.path.lexists(dst)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     try:
         after = os.lstat(dst)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     if not os.path.samestat(before, after):
         return False
@@ -430,7 +430,7 @@ def landed(src: Path, dst: Path) -> bool:
         # A case-only rename: done once the folder lists the new spelling.
         try:
             return src.name != dst.name and dst.name in os.listdir(dst.parent)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return False
     if stat.S_ISREG(before.st_mode):
         try:

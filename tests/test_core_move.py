@@ -67,10 +67,22 @@ def _session(projects: Path, cwd: str, sid: str, *, folder: str | None = None) -
     path = write_compact_jsonl(
         projects / (folder or encode_project_dir(cwd)) / f"{sid}.jsonl",
         [
-            {"type": "user", "cwd": cwd, "sessionId": sid, "uuid": "u1",
-             "message": {"role": "user", "content": "hi"}, "timestamp": TS},
-            {"type": "assistant", "cwd": cwd, "sessionId": sid, "uuid": "a1",
-             "message": {"role": "assistant", "content": []}, "timestamp": TS},
+            {
+                "type": "user",
+                "cwd": cwd,
+                "sessionId": sid,
+                "uuid": "u1",
+                "message": {"role": "user", "content": "hi"},
+                "timestamp": TS,
+            },
+            {
+                "type": "assistant",
+                "cwd": cwd,
+                "sessionId": sid,
+                "uuid": "a1",
+                "message": {"role": "assistant", "content": []},
+                "timestamp": TS,
+            },
         ],
     )
     _age(path)
@@ -119,7 +131,9 @@ def test_a_session_whose_name_is_taken_at_the_destination_stays_whole_and_unrewr
     taken = _session(store, str(OLD), A)
     (taken.parent / A / "subagents").mkdir(parents=True)
     other = _session(store, str(OLD), B)
-    squatter = write_compact_jsonl(store / "-x-new" / f"{A}.jsonl", [{"type": "user", "cwd": "keep"}])
+    squatter = write_compact_jsonl(
+        store / "-x-new" / f"{A}.jsonl", [{"type": "user", "cwd": "keep"}]
+    )
     before = taken.read_bytes()
 
     result = _move(tmp_path)
@@ -495,9 +509,7 @@ def test_a_transcript_busy_after_planning_keeps_its_folder(tmp_path, store):
 # --- M5: a chain of folders lands where each belongs ----------------------------------
 
 
-def test_a_folder_moving_into_a_folder_that_moves_itself_lands_in_the_right_place(
-    tmp_path, store
-):
+def test_a_folder_moving_into_a_folder_that_moves_itself_lands_in_the_right_place(tmp_path, store):
     """``/x/app -> /x/app-v1`` while ``/x/app/v1`` has sessions: their folders chain."""
     first = _session(store, "/x/app", A)
     second = _session(store, "/x/app/v1", B)

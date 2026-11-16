@@ -118,8 +118,7 @@ def _maybe_notify_update() -> None:
         return
     if info is not None:
         print(
-            f"↑ sx {info.latest} is available (you have {info.current}). "
-            f"Upgrade: {info.command}",
+            f"↑ sx {info.latest} is available (you have {info.current}). Upgrade: {info.command}",
             file=sys.stderr,
         )
 
@@ -228,10 +227,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                 title = _safe(session.title or "").strip()
                 if len(title) > 60:
                     title = title[:57] + "..."
-                print(
-                    f"    {short_id}  {_fmt_date(session)}  "
-                    f"{count:>4} msgs  {size:>9}  {title}"
-                )
+                print(f"    {short_id}  {_fmt_date(session)}  {count:>4} msgs  {size:>9}  {title}")
 
     if total == 0:
         print("No sessions found.")
@@ -282,8 +278,7 @@ def cmd_harnesses(args: argparse.Namespace) -> int:
     for adapter in adapters:
         lines += [f"  {adapter.display}: {note}" for note in _store_lines(adapter.store_notes)]
         lines += [
-            f"  ⚠ {adapter.display}: {warning}"
-            for warning in _store_lines(adapter.store_warnings)
+            f"  ⚠ {adapter.display}: {warning}" for warning in _store_lines(adapter.store_warnings)
         ]
     if lines:
         print()
@@ -344,7 +339,7 @@ def _confirm_move(*, strict: bool) -> bool:
         if strict:
             return input('\nType "MOVE" to proceed: ').strip() == "MOVE"
         return input("\nProceed? [y/N] ").strip().lower() in ("y", "yes")
-    except (EOFError, KeyboardInterrupt):
+    except EOFError, KeyboardInterrupt:
         print()
         return False
 
@@ -545,31 +540,38 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_move.add_argument(
-        "--from", dest="source", required=True, metavar="PATH",
+        "--from",
+        dest="source",
+        required=True,
+        metavar="PATH",
         help="The project directory the sessions currently point at.",
     )
     p_move.add_argument(
-        "--to", dest="destination", required=True, metavar="PATH",
+        "--to",
+        dest="destination",
+        required=True,
+        metavar="PATH",
         help="The project directory they should point at instead.",
     )
     p_move.add_argument(
-        "--relocate", action="store_true",
+        "--relocate",
+        action="store_true",
         help="Move the project directory itself first, then re-point the sessions.",
     )
     p_move.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Show exactly what would change and stop; exit 1 if any of it would be refused.",
     )
     p_move.add_argument(
-        "--claude-config", action="store_true",
+        "--claude-config",
+        action="store_true",
         help=(
             "Also re-point Claude's own project state (the .claude.json trust "
             "and allowedTools entry, and history.jsonl)."
         ),
     )
-    p_move.add_argument(
-        "--yes", action="store_true", help="Skip the interactive confirmation."
-    )
+    p_move.add_argument("--yes", action="store_true", help="Skip the interactive confirmation.")
     p_move.set_defaults(func=cmd_move)
 
     p_memory = sub.add_parser(
@@ -585,18 +587,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_memory.add_argument(
         "--project", metavar="PATH", help="Only memories for this project directory."
     )
-    p_memory.add_argument(
-        "--export", metavar="DIR", help="Copy every listed memory into DIR."
-    )
+    p_memory.add_argument("--export", metavar="DIR", help="Copy every listed memory into DIR.")
     p_memory.add_argument(
         "--delete", action="store_true", help="Permanently delete every listed memory."
     )
     p_memory.add_argument(
         "--dry-run", action="store_true", help="Show what --delete would remove and stop."
     )
-    p_memory.add_argument(
-        "--yes", action="store_true", help="Skip the interactive confirmation."
-    )
+    p_memory.add_argument("--yes", action="store_true", help="Skip the interactive confirmation.")
     p_memory.set_defaults(func=cmd_memory)
 
     p_harnesses = sub.add_parser("harnesses", help="Show all known harnesses and status.")

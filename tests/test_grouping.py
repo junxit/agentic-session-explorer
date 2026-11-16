@@ -31,9 +31,9 @@ def _sample_sessions() -> list[Session]:
         _session("a", "/proj/x", datetime(2026, 5, 30, 9)),  # today
         _session("b", "/proj/x", datetime(2026, 5, 29, 9)),  # yesterday
         _session("c", "/proj/y", datetime(2026, 5, 26, 9)),  # earlier this week
-        _session("d", "/proj/y", datetime(2026, 5, 5, 9)),   # this month
+        _session("d", "/proj/y", datetime(2026, 5, 5, 9)),  # this month
         _session("e", "/proj/z", datetime(2026, 1, 15, 9)),  # 2026-01
-        _session("f", "/proj/z", None),                       # unknown
+        _session("f", "/proj/z", None),  # unknown
     ]
 
 

@@ -58,12 +58,18 @@ def _move(adapter, old=OLD, new=NEW, **kwargs):
 @pytest.mark.parametrize(
     ("directory", "folder"),
     [
-        ("/Users/Jade/source/junxit/agentic-session-explorer",
-         "-Users-Jade-source-junxit-agentic-session-explorer"),
-        ("/Users/Jade/.extra/source/git_clones/usgpo/api",
-         "-Users-Jade--extra-source-git-clones-usgpo-api"),
-        ("/Users/Jade/Documents/Professional and Social Memberships/IEEE",
-         "-Users-Jade-Documents-Professional-and-Social-Memberships-IEEE"),
+        (
+            "/Users/Jade/source/junxit/agentic-session-explorer",
+            "-Users-Jade-source-junxit-agentic-session-explorer",
+        ),
+        (
+            "/Users/Jade/.extra/source/git_clones/usgpo/api",
+            "-Users-Jade--extra-source-git-clones-usgpo-api",
+        ),
+        (
+            "/Users/Jade/Documents/Professional and Social Memberships/IEEE",
+            "-Users-Jade-Documents-Professional-and-Social-Memberships-IEEE",
+        ),
         ("/Users/Jade/source/junxit/forks--", "-Users-Jade-source-junxit-forks--"),
     ],
 )
@@ -238,7 +244,11 @@ def test_codex_move_rewrites_every_cwd_and_leaves_the_file_in_place(tmp_path, mo
         json.loads(line)["payload"].get("cwd") for line in rollout.read_text().splitlines()
     ]
     assert payload_cwds == [
-        "/new/home/proj", None, "/new/home/proj", "/new/home/proj/deep", "/unrelated"
+        "/new/home/proj",
+        None,
+        "/new/home/proj",
+        "/new/home/proj/deep",
+        "/unrelated",
     ]
     assert result.fields_updated == 3
     assert not result.moved

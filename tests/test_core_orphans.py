@@ -344,7 +344,9 @@ def test_codex_never_calls_an_unreadable_project_an_orphan(tmp_path, monkeypatch
     """Codex sessions take their orphan flag from the shared base."""
     monkeypatch.setattr(codex_mod, "home", lambda: tmp_path)
     rollout = tmp_path / ".codex" / "sessions" / "2026" / "01" / "01" / "rollout-x.jsonl"
-    write_compact_jsonl(rollout, [{"type": "session_meta", "payload": {"id": "c", "cwd": str(locked)}}])
+    write_compact_jsonl(
+        rollout, [{"type": "session_meta", "payload": {"id": "c", "cwd": str(locked)}}]
+    )
     assert [s.is_orphan for s in CodexAdapter().discover()] == [False]
 
 
@@ -457,9 +459,7 @@ def test_a_store_behind_a_link_to_an_unmounted_volume_hides_its_sessions(tmp_pat
 
 
 @pytest.mark.parametrize("target", ["unmounted", "a file"])
-def test_a_project_folder_linked_to_no_directory_hides_its_sessions(
-    tmp_path, monkeypatch, target
-):
+def test_a_project_folder_linked_to_no_directory_hides_its_sessions(tmp_path, monkeypatch, target):
     """One project folder is a link whose target is not a directory now."""
     adapter, folder, _ = _a_live_session(tmp_path, monkeypatch)
     volume = _onto_a_volume(tmp_path, folder)

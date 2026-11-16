@@ -22,8 +22,10 @@ from sx.adapters.omp import _parse_dotenv
     ("text", "expected"),
     [
         # From Bun's own tests of util.parseEnv and of .env files.
-        ("A=x\u0920\nB=\u00a0x\u00a0\nC=\u00a0\nD=  x  \n",
-         {"A": "x\u0920", "B": "\u00a0x\u00a0", "C": "\u00a0", "D": "x"}),
+        (
+            "A=x\u0920\nB=\u00a0x\u00a0\nC=\u00a0\nD=  x  \n",
+            {"A": "x\u0920", "B": "\u00a0x\u00a0", "C": "\u00a0", "D": "x"},
+        ),
         ("FOO=\rBAR='bar\r\rbaz'\r\nMOO=moo\r", {"FOO": "", "BAR": "bar\n\nbaz", "MOO": "moo"}),
         ('KEY="a\\nb"', {"KEY": "a\nb"}),
         ("VARNAME=A B", {"VARNAME": "A B"}),

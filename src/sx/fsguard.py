@@ -125,11 +125,11 @@ def _gone_for_certain(text: str) -> bool:
         # an unplugged drive, typically — is away, not the project.
         try:
             os.stat(ancestor)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return False
     try:
         real = os.path.realpath(text)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     return not any(_volume_away(candidate) for candidate in {text, real})
 
@@ -154,7 +154,7 @@ def _volume_away(text: str) -> bool:
             continue
         try:
             parent_device = os.lstat(parent).st_dev
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return True
         current = text
         while current != parent:

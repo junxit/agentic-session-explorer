@@ -419,8 +419,7 @@ class SxApp(App):
             latest = sanitize_text(str(info.latest)).replace("[", r"\[")
             self.call_from_thread(
                 self.notify,
-                f"sx {latest} is available (you have {info.current}). "
-                f"Upgrade: {info.command}",
+                f"sx {latest} is available (you have {info.current}). Upgrade: {info.command}",
                 title="Update available",
                 severity="information",
                 timeout=10,
@@ -552,9 +551,7 @@ class SxApp(App):
         """Render a session leaf label (live badge, date, size, title)."""
         live = self._is_live_cached(session)
         date = session.modified.strftime("%Y-%m-%d") if session.modified else "          "
-        title = sanitize_text(
-            (session.title or session.session_id).replace("\n", " ").strip()
-        )
+        title = sanitize_text((session.title or session.session_id).replace("\n", " ").strip())
         label = Text()
         if live:
             label.append("● ", style="bold red")
@@ -789,9 +786,7 @@ class SxApp(App):
                 try:
                     transcript = await asyncio.to_thread(adapter.load_transcript, session)
                 except Exception as exc:  # noqa: BLE001
-                    self.notify(
-                        f"Export failed: {self._toast_safe(repr(exc))}", severity="error"
-                    )
+                    self.notify(f"Export failed: {self._toast_safe(repr(exc))}", severity="error")
                     return
                 if transcript.branched:
                     choice = await self.push_screen_wait(
@@ -811,8 +806,7 @@ class SxApp(App):
                 )
             except SessionGoneError as exc:
                 self.notify(
-                    f"Nothing was exported — {self._toast_safe(exc)}. Press r to refresh "
-                    "the list.",
+                    f"Nothing was exported — {self._toast_safe(exc)}. Press r to refresh the list.",
                     severity="error",
                     timeout=10,
                 )
@@ -824,9 +818,7 @@ class SxApp(App):
 
     # --- delete ----------------------------------------------------------
 
-    def _session_preview_text(
-        self, session: Session, leftovers: dict, remaining: int
-    ) -> Text:
+    def _session_preview_text(self, session: Session, leftovers: dict, remaining: int) -> Text:
         """Render the delete preview for a session.
 
         Shows the files that will go, any non-file work (database rows and
@@ -1050,9 +1042,7 @@ class SxApp(App):
                 timeout=10,
             )
         elif outcome.refused:
-            self.notify(
-                _partial_delete_notice(session, outcome), severity="warning", timeout=10
-            )
+            self.notify(_partial_delete_notice(session, outcome), severity="warning", timeout=10)
         else:
             self.notify(f"Deleted: {self._toast_safe(outcome.summary())}")
         if result.get("bundle") and leftovers:
@@ -1291,9 +1281,7 @@ class SxApp(App):
             self.notify("Move service unavailable.", severity="error")
             return
         if not session.project_path:
-            self.notify(
-                "This session has no known project directory.", severity="warning"
-            )
+            self.notify("This session has no known project directory.", severity="warning")
             return
 
         old = Path(session.project_path)
@@ -1406,9 +1394,7 @@ class SxApp(App):
         if len(memories) == 1:
             memory = memories[0]
             preview.append(f"{_safe(memory.name)}\n", style="bold")
-            preview.append(
-                f"{_safe(memory.project_path or '(unknown project)')}\n\n", style="dim"
-            )
+            preview.append(f"{_safe(memory.project_path or '(unknown project)')}\n\n", style="dim")
             if memory.description:
                 preview.append(f"{_safe(memory.description)}\n\n", style="italic")
             preview.append(f"  • {_safe(memory.path)}\n")
@@ -1584,9 +1570,7 @@ class SxApp(App):
                 )
                 for orphan, result in refused[:5]:
                     reason = next(iter(result.refused.values()), "refused")
-                    preview.append(
-                        f"  ✗ {_safe(orphan.reason)} — {_safe(reason)}\n", style="red"
-                    )
+                    preview.append(f"  ✗ {_safe(orphan.reason)} — {_safe(reason)}\n", style="red")
                 if len(refused) > 5:
                     preview.append(
                         f"  … and {len(refused) - 5} more refused orphan(s) not shown\n",

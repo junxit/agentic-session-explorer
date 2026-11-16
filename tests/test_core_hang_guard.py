@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-HANGING = '''
+HANGING = """
 import asyncio
 
 import pytest
@@ -25,7 +25,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_awaits_forever():
     await asyncio.Event().wait()
-'''
+"""
 
 
 def test_a_test_that_never_finishes_ends_the_run_and_is_named(tmp_path):

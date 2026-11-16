@@ -49,8 +49,7 @@ def _wire(app, tmp_path: Path, monkeypatch, project: Path):
     folder.mkdir(parents=True)
     transcript = folder / f"{SID}.jsonl"
     transcript.write_text(
-        json.dumps({"type": "user", "cwd": str(project), "message": {"content": "hi"}})
-        + "\n"
+        json.dumps({"type": "user", "cwd": str(project), "message": {"content": "hi"}}) + "\n"
     )
     # Back-date it so the live-session guard does not demand a typed phrase;
     # that path has its own test below.
@@ -231,9 +230,7 @@ async def test_n_opens_the_memory_browser(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_project_cleanup_box_appears_only_on_the_last_session(
-    tmp_path, monkeypatch
-):
+async def test_the_project_cleanup_box_appears_only_on_the_last_session(tmp_path, monkeypatch):
     """Memory is offered when nothing else references the project, never before."""
     from textual.widgets import Checkbox
 
@@ -249,8 +246,7 @@ async def test_the_project_cleanup_box_appears_only_on_the_last_session(
 
         # A second session for the same project: not the last one.
         (folder / "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl").write_text(
-            json.dumps({"type": "user", "cwd": "/old/proj", "message": {"content": "x"}})
-            + "\n"
+            json.dumps({"type": "user", "cwd": "/old/proj", "message": {"content": "x"}}) + "\n"
         )
         adapter = app._adapters_by_name["claude"]
         app._sessions_by_harness["claude"] = list(adapter.discover())

@@ -25,6 +25,7 @@ from sx.util import is_within, mount_unavailable, sanitize_text
 
 # --- helpers ---------------------------------------------------------------
 
+
 class _RefusingAdapter(HarnessAdapter):
     """An adapter that reports orphans its own store roots do not permit.
 
@@ -221,6 +222,7 @@ def test_delete_refuses_a_store_root_itself(tmp_path: Path):
 
 # --- failure must not be reported as success -------------------------------
 
+
 def test_refused_delete_is_marked_failed_not_silent(tmp_path: Path):
     """A fully-refused delete reports failure rather than an empty success."""
     root = tmp_path / "store"
@@ -265,6 +267,7 @@ def test_summary_reports_partial_outcomes():
 
 # --- export must never overwrite its own archive ---------------------------
 
+
 def test_export_never_overwrites_an_existing_archive(tmp_path: Path):
     """Colliding export names get a suffix instead of destroying the first file.
 
@@ -295,6 +298,7 @@ def test_export_never_overwrites_an_existing_archive(tmp_path: Path):
 
 
 # --- cascade deletion must be exact ----------------------------------------
+
 
 def test_cascade_ignores_non_uuid_session_ids(tmp_path: Path, monkeypatch):
     """A short/malformed session id must never sweep unrelated state.
@@ -330,9 +334,7 @@ def test_cascade_matches_a_real_uuid(tmp_path: Path, monkeypatch):
     todos.mkdir(parents=True)
     (todos / f"{sid}-agent-x.json").write_text("{}", encoding="utf-8")
 
-    matches = claude_mod.ClaudeAdapter().correlated_paths(
-        Session(harness="claude", session_id=sid)
-    )
+    matches = claude_mod.ClaudeAdapter().correlated_paths(Session(harness="claude", session_id=sid))
     names = {p.name for p in matches}
     assert sid in names
     assert f"{sid}-agent-x.json" in names
@@ -340,6 +342,7 @@ def test_cascade_matches_a_real_uuid(tmp_path: Path, monkeypatch):
 
 
 # --- unmounted volumes are not dead projects -------------------------------
+
 
 def test_unmounted_volume_is_not_treated_as_deleted():
     """A project on an absent volume is unavailable, not an orphan."""
@@ -383,6 +386,7 @@ def test_session_on_missing_volume_is_not_flagged_orphan(tmp_path: Path):
 
 
 # --- liveness guard --------------------------------------------------------
+
 
 def test_unknown_liveness_is_treated_as_live(tmp_path: Path):
     """When liveness can't be determined the session counts as active.
@@ -439,6 +443,7 @@ def test_adapter_supplied_liveness_is_used(tmp_path: Path):
 
 # --- terminal escapes ------------------------------------------------------
 
+
 def test_control_characters_are_neutralized_but_visible():
     """Escape sequences become inert glyphs; tabs and newlines survive."""
     evil = "hi\x1b]0;pwned\x07\x1b[2J"
@@ -471,6 +476,7 @@ def test_exported_markdown_contains_no_escapes(tmp_path: Path):
 
 
 # --- op-log location -------------------------------------------------------
+
 
 def test_op_log_defaults_to_the_working_directory(tmp_path: Path, monkeypatch):
     """The op-log sits beside the work it describes, never under ~/.local."""
@@ -526,6 +532,7 @@ def test_op_log_is_owner_only_and_records_the_deletion(tmp_path: Path):
 
 
 # --- update cache ----------------------------------------------------------
+
 
 @pytest.mark.parametrize("payload", ["[]", "null", '"a string"', "42"])
 def test_non_dict_update_cache_does_not_crash(tmp_path: Path, monkeypatch, payload):

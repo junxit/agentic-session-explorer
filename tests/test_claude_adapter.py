@@ -25,9 +25,7 @@ def _assistant(content) -> dict:
 
 def _write(path: Path, records: list[dict]) -> Path:
     """Write Claude JSONL records to ``path`` and return it."""
-    path.write_text(
-        "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8"
-    )
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
     return path
 
 
@@ -163,9 +161,7 @@ def test_parse_meta_record_skipped():
 
 def test_parse_tool_result_only_user_is_tool_role():
     """A user record carrying only tool_result content yields a TOOL message."""
-    m = ClaudeAdapter().parse_line(
-        _user([{"type": "tool_result", "content": "result text here"}])
-    )
+    m = ClaudeAdapter().parse_line(_user([{"type": "tool_result", "content": "result text here"}]))
     assert m is not None
     assert m.role is Role.TOOL
     assert "result text here" in m.text

@@ -270,9 +270,7 @@ def test_move_plan_lines_are_neutralized(serve, tmp_path, capsys):
     assert "• ␛]0;PWNED␇rows updated" in out
 
 
-def test_move_with_yes_still_warns_that_moving_an_open_session_breaks_it(
-    serve, tmp_path, capsys
-):
+def test_move_with_yes_still_warns_that_moving_an_open_session_breaks_it(serve, tmp_path, capsys):
     """The live warning says what really happens, and ``--yes`` does not hide it (M9)."""
     store = tmp_path / "store"
     adapter = serve(_Movable(store, [_session(store, "s1", live=True)]))
@@ -313,9 +311,7 @@ def test_no_caveat_for_a_harness_without_one(serve, tmp_path, capsys):
     assert "⚠" not in capsys.readouterr().out
 
 
-def test_move_refuses_a_session_that_went_live_at_the_prompt(
-    serve, tmp_path, capsys, monkeypatch
-):
+def test_move_refuses_a_session_that_went_live_at_the_prompt(serve, tmp_path, capsys, monkeypatch):
     """A plain yes covered no live session, so one that went live meanwhile stops the move."""
     store = tmp_path / "store"
     session = _session(store, "s1")
@@ -416,10 +412,8 @@ class _OwnerFails(_Fake):
 
 
 def test_harnesses_names_the_owner_of_a_store_handed_over(monkeypatch, capsys):
-    """"store belongs to …" replaces "not installed"; without an owner nothing changes."""
-    monkeypatch.setattr(
-        "sx.cli.build_registry", lambda: ([_Handed(), _OwnerFails(), _Fake()], [])
-    )
+    """ "store belongs to …" replaces "not installed"; without an owner nothing changes."""
+    monkeypatch.setattr("sx.cli.build_registry", lambda: ([_Handed(), _OwnerFails(), _Fake()], []))
     monkeypatch.setenv("SX_NO_UPDATE_CHECK", "1")
 
     assert main(["harnesses"]) == 0

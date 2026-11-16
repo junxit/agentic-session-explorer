@@ -924,7 +924,7 @@ def _head_records(path: Path) -> tuple[str, list[dict]]:
             continue
         try:
             value = json.loads(line)
-        except (ValueError, RecursionError):
+        except ValueError, RecursionError:
             continue
         if isinstance(value, dict):
             records.append(value)
@@ -965,7 +965,7 @@ def _unescape(raw: str) -> str:
     body = raw.removesuffix("\\")
     try:
         value = json.loads(f'"{body}"')
-    except (ValueError, RecursionError):
+    except ValueError, RecursionError:
         value = None
     if isinstance(value, str):
         return value
@@ -1104,16 +1104,16 @@ def _flock_state(path: Path) -> str:
         return LEASE_UNKNOWN
     try:
         before = os.lstat(path)
-    except (FileNotFoundError, NotADirectoryError):
+    except FileNotFoundError, NotADirectoryError:
         return _ABSENT
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return LEASE_UNKNOWN
     if not stat.S_ISREG(before.st_mode):
         return LEASE_UNKNOWN
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
     try:
         fd = os.open(path, flags)
-    except (FileNotFoundError, NotADirectoryError):
+    except FileNotFoundError, NotADirectoryError:
         return _ABSENT
     except OSError:
         return LEASE_UNKNOWN
@@ -1155,9 +1155,9 @@ def _probe_lease(directory: Path, session_id: str) -> str:
     """
     try:
         info = os.lstat(directory)
-    except (FileNotFoundError, NotADirectoryError):
+    except FileNotFoundError, NotADirectoryError:
         return _ABSENT
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return LEASE_UNKNOWN
     owner = os.getuid() if hasattr(os, "getuid") else info.st_uid
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & 0o077:
@@ -1283,7 +1283,7 @@ def _list_processes() -> list[tuple[int, int, str]] | None:
             timeout=_scan_timeout(),
             check=False,
         )
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except OSError, subprocess.SubprocessError, ValueError:
         return None
     return _parse_ps(done.stdout) if done.returncode == 0 else None
 
@@ -1353,7 +1353,7 @@ def _list_open_files(pids: list[int]) -> dict[int, list[str]] | None:
             check=False,
             env={**os.environ, "LC_ALL": _LSOF_LOCALE},
         )
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except OSError, subprocess.SubprocessError, ValueError:
         return None
     return _parse_lsof(done.stdout)  # exit status 1 only says some pid was not found
 
@@ -1388,7 +1388,7 @@ def _private_dir(directory: Path) -> bool:
     """Return True for a directory only this user can use, as omp's lease directories are."""
     try:
         info = os.lstat(directory)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     owner = os.getuid() if hasattr(os, "getuid") else info.st_uid
     return stat.S_ISDIR(info.st_mode) and info.st_uid == owner and not info.st_mode & 0o077
@@ -1751,7 +1751,7 @@ def _read_dotenv(path: Path) -> _DotEnv | None:
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
-    except (FileNotFoundError, NotADirectoryError, ValueError):
+    except FileNotFoundError, NotADirectoryError, ValueError:
         return _NO_DOTENV
     except OSError as exc:
         return _NO_DOTENV if exc.errno in (errno.ELOOP, errno.ENAMETOOLONG) else None
@@ -1916,7 +1916,9 @@ def _agent_dir(
         profile's default one; and ``"profile"``, ``"legacy"``, ``"ignored"``,
         ``"followed"`` or ``None``, with the reason or override for it.
     """
-    default = _node_join(root, "profiles", profile, "agent") if profile else _node_join(root, "agent")
+    default = (
+        _node_join(root, "profiles", profile, "agent") if profile else _node_join(root, "agent")
+    )
     raw = env.get(AGENT_DIR_ENV)
     if not raw:
         return default, default, None, None
@@ -2149,7 +2151,9 @@ def _resolve(base: Path) -> _Store:
         leases = _node_join(lease_base or root, "run", "session-owners")
     default_leases = Path(_node_join(str(base), ".omp", "run", "session-owners"))
     conventional, _ = _lease_dirs_from(base, [{XDG_STATE_ENV: str(base / ".local" / "state")}])
-    lease_dirs = _dedupe([*([Path(leases)] if leases else []), default_leases, *dirs, *conventional])
+    lease_dirs = _dedupe(
+        [*([Path(leases)] if leases else []), default_leases, *dirs, *conventional]
+    )
     # An omp whose own environment sets PI_TEST_RUNTIME keeps its leases here;
     # nothing sx can read says one does, so it is only watched for a held lease.
     watch = tuple(path for path in (_test_lease_dir(),) if path not in lease_dirs)
@@ -2666,7 +2670,8 @@ class OmpAdapter(PiFormatAdapter):
             summaries = [
                 record["shortSummary"]
                 for record in records[1:]
-                if record.get("type") == "compaction" and isinstance(record.get("shortSummary"), str)
+                if record.get("type") == "compaction"
+                and isinstance(record.get("shortSummary"), str)
             ]
             recorded = summaries[-1] if summaries else None
         title = _first_line(recorded) if recorded else None
@@ -3405,7 +3410,7 @@ class OmpAdapter(PiFormatAdapter):
         backups = self._session_backups(path)
         try:
             os.lstat(path)
-        except (FileNotFoundError, NotADirectoryError):
+        except FileNotFoundError, NotADirectoryError:
             if artifacts is None and not backups:
                 result.skipped[path] = "does not exist"
             else:
@@ -3414,7 +3419,7 @@ class OmpAdapter(PiFormatAdapter):
                     "may be rewriting it, and would restore it from a backup (refused)"
                 )
             return result
-        except (OSError, ValueError):
+        except OSError, ValueError:
             pass  # the guard reports why it cannot be checked
         rest: list[Path] = []
         if artifacts is not None:
@@ -3437,9 +3442,7 @@ class OmpAdapter(PiFormatAdapter):
             stuck = next((p for p in targets if p in part.refused), None)
             if stuck is None:
                 continue
-            why = (
-                f"not deleted: {stuck.name} could not be removed, and {consequence} (refused)"
-            )
+            why = f"not deleted: {stuck.name} could not be removed, and {consequence} (refused)"
             for later, _ in steps[index + 1 :]:
                 for leftover in later:
                     result.skipped.setdefault(leftover, why)
@@ -3798,7 +3801,9 @@ class OmpAdapter(PiFormatAdapter):
         except OSError as exc:
             return f"cannot read: {exc}"
         names = {entry.name for entry in entries}
-        transcripts = {name for name in names if name.endswith(".jsonl") and not name.startswith(".")}
+        transcripts = {
+            name for name in names if name.endswith(".jsonl") and not name.startswith(".")
+        }
         archive = self.archive_dir()
         for entry in entries:
             name = entry.name
@@ -3849,9 +3854,7 @@ class OmpAdapter(PiFormatAdapter):
             name = entry.name
             if _is_lock_name(name) and _modified_within(entry, _LOCK_WINDOW_SECONDS, now):
                 return f"Oh My Pi is writing in this folder ({name}) (refused)"
-            if _temp_owner(name) is not None and _modified_within(
-                entry, _TEMP_GRACE_SECONDS, now
-            ):
+            if _temp_owner(name) is not None and _modified_within(entry, _TEMP_GRACE_SECONDS, now):
                 return f"Oh My Pi is rewriting a session in this folder ({name}) (refused)"
             if name.startswith(_COMPRESS_SCRATCH) and _modified_within(
                 entry, _TEMP_GRACE_SECONDS, now

@@ -130,8 +130,10 @@ def test_codex_delete_removes_its_history_rows(tmp_path, monkeypatch):
     )
     history = tmp_path / ".codex" / "history.jsonl"
     history.write_text(
-        json.dumps({"session_id": "cx-1", "text": "gone"}) + "\n"
-        + json.dumps({"session_id": "cx-2", "text": "kept"}) + "\n"
+        json.dumps({"session_id": "cx-1", "text": "gone"})
+        + "\n"
+        + json.dumps({"session_id": "cx-2", "text": "kept"})
+        + "\n"
     )
 
     adapter = CodexAdapter()

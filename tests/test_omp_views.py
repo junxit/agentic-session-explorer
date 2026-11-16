@@ -178,7 +178,9 @@ def test_a_first_prompt_cut_off_at_4096_bytes_still_titles_the_session(old):
     """omp scans the raw text for it, as it does when the line does not parse."""
     path = base._bucket(old) / base._name("S1")
     prompt = "Refactor the parser " + "x" * 6000
-    base._write(path, [base._header("S1", str(old)), base._user("u1", None, prompt)], slot=base._slot())
+    base._write(
+        path, [base._header("S1", str(old)), base._user("u1", None, prompt)], slot=base._slot()
+    )
     assert base._title(path).startswith("Refactor the parser xxx")
 
 

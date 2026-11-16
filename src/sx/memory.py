@@ -119,9 +119,7 @@ def parse_frontmatter(text: str) -> dict[str, str]:
     return fields
 
 
-def _memory_from_file(
-    path: Path, project_path: str | None, live_sessions: set[str]
-) -> MemoryFile:
+def _memory_from_file(path: Path, project_path: str | None, live_sessions: set[str]) -> MemoryFile:
     """Build a :class:`MemoryFile` from one document on disk."""
     try:
         head = path.read_text(encoding="utf-8", errors="replace")[:4096]
@@ -196,7 +194,9 @@ def discover_memories(root: Path | None = None) -> list[MemoryFile]:
     for folder in sorted(projects.iterdir()):
         if not folder.is_dir():
             continue
-        documents = sorted((folder / "memory").rglob("*.md")) if (folder / "memory").is_dir() else []
+        documents = (
+            sorted((folder / "memory").rglob("*.md")) if (folder / "memory").is_dir() else []
+        )
         index = folder / "MEMORY.md"
         if index.is_file():
             documents.append(index)

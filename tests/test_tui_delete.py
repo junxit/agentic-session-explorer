@@ -287,9 +287,7 @@ async def test_the_last_session_preview_names_memory_and_settings(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_project_state_stays_when_a_session_appeared_since_the_scan(
-    tmp_path, monkeypatch
-):
+async def test_project_state_stays_when_a_session_appeared_since_the_scan(tmp_path, monkeypatch):
     """The offer came from the tree's scan; the stores are counted again before it goes."""
     adapter = _Folder(tmp_path / "store", "one")
     app = SxApp()
@@ -415,8 +413,14 @@ async def test_the_fullest_delete_dialog_keeps_its_controls_on_screen(tmp_path, 
             await pilot.pause()
         dialog = screen.query_one("#dialog")
         assert dialog.max_scroll_y == 0, "nothing should need scrolling at this size"
-        for selector in ("#caveat", "#export", "#export-mode", "#bundle", "#confirm-input",
-                         "#confirm"):
+        for selector in (
+            "#caveat",
+            "#export",
+            "#export-mode",
+            "#bundle",
+            "#confirm-input",
+            "#confirm",
+        ):
             assert _inside(dialog.content_region, screen.query_one(selector).region), selector
         shrunk = screen.query_one("#preview").outer_size.height
 

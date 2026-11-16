@@ -48,9 +48,7 @@ def _store(tmp_path: Path, monkeypatch) -> Path:
     (folder / "memory" / "harness-formats.md").write_text(
         DOC.format(name="harness-formats", sid=SID)
     )
-    (folder / "memory" / "stale-note.md").write_text(
-        DOC.format(name="stale-note", sid=GONE)
-    )
+    (folder / "memory" / "stale-note.md").write_text(DOC.format(name="stale-note", sid=GONE))
     (folder / "memory" / "MEMORY.md").write_text("# Memory Index\n\n- [a](a.md) — hook\n")
     return tmp_path / ".claude" / "projects"
 

@@ -33,7 +33,13 @@ def _meta(cwd: str = "/home/proj", sid: str = "sess-123") -> dict:
 def test_message_user_role():
     """A response_item message with role=user yields a USER message."""
     m = CodexAdapter().parse_line(
-        _ri({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]})
+        _ri(
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        )
     )
     assert m is not None
     assert m.role is Role.USER

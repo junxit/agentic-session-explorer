@@ -63,10 +63,22 @@ def _session(projects: Path, cwd: str, sid: str, *, folder: str | None = None) -
     path = write_compact_jsonl(
         projects / (folder or encode_project_dir(cwd)) / f"{sid}.jsonl",
         [
-            {"type": "user", "cwd": cwd, "sessionId": sid, "uuid": "u1",
-             "message": {"role": "user", "content": "hi"}, "timestamp": TS},
-            {"type": "assistant", "cwd": cwd, "sessionId": sid, "uuid": "a1",
-             "message": {"role": "assistant", "content": []}, "timestamp": TS},
+            {
+                "type": "user",
+                "cwd": cwd,
+                "sessionId": sid,
+                "uuid": "u1",
+                "message": {"role": "user", "content": "hi"},
+                "timestamp": TS,
+            },
+            {
+                "type": "assistant",
+                "cwd": cwd,
+                "sessionId": sid,
+                "uuid": "a1",
+                "message": {"role": "assistant", "content": []},
+                "timestamp": TS,
+            },
         ],
     )
     past = time.time() - 3600
@@ -135,7 +147,9 @@ def test_a_stray_follows_its_project_into_the_renamed_folder(tmp_path, store, ca
     assert result.refused == {}
 
 
-def test_a_session_whose_destination_is_itself_is_refused_and_kept(tmp_path, store, case_insensitive):
+def test_a_session_whose_destination_is_itself_is_refused_and_kept(
+    tmp_path, store, case_insensitive
+):
     """Its folder also holds another project's session, so it would move alone — onto itself."""
     path = _session(store, str(OLD), A)
     other = _session(store, "/x-Proj", B)  # encodes alike: the folder cannot move whole

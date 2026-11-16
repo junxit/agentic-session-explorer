@@ -64,7 +64,10 @@ def _branched(prompt: str = "the prompt") -> Transcript:
 def _linear() -> Transcript:
     """A session that never branched."""
     return Transcript(
-        current=[Message(Role.USER, text="only prompt"), Message(Role.ASSISTANT, text="only answer")]
+        current=[
+            Message(Role.USER, text="only prompt"),
+            Message(Role.ASSISTANT, text="only answer"),
+        ]
     )
 
 
@@ -74,7 +77,10 @@ def _edited(original: Transcript) -> Transcript:
     The edit starts a new root, so everything ``original`` held moves to a side
     branch and the current branch holds only the edited exchange.
     """
-    edited = [Message(Role.USER, text="edited prompt"), Message(Role.ASSISTANT, text="edited answer")]
+    edited = [
+        Message(Role.USER, text="edited prompt"),
+        Message(Role.ASSISTANT, text="edited answer"),
+    ]
     return Transcript(
         current=edited,
         branches=[Branch(label="a separate root", messages=list(original.current))],
@@ -548,7 +554,9 @@ async def test_a_dialog_dismissed_twice_only_closes_itself(tmp_path):
                 descriptions={mode: mode.label() for mode in BranchMode}, default=BranchMode.TREE
             ),
             ConfirmDeleteScreen(heading="Delete?", preview=Text("preview")),
-            MoveScreen(heading="Move?", old="/old/proj", preview=lambda *_: (Text(""), False, False)),
+            MoveScreen(
+                heading="Move?", old="/old/proj", preview=lambda *_: (Text(""), False, False)
+            ),
         ]
         for screen in screens:
             app.push_screen(screen, results.append)
@@ -638,7 +646,9 @@ class _ReadsBranches(_Branching):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("adapter_type", [_ReadsLinear, _ReadsBranches], ids=["linear", "branching"])
+@pytest.mark.parametrize(
+    "adapter_type", [_ReadsLinear, _ReadsBranches], ids=["linear", "branching"]
+)
 async def test_exporting_a_session_whose_file_is_gone_writes_nothing(
     tmp_path, monkeypatch, adapter_type
 ):
@@ -731,9 +741,7 @@ async def test_export_before_delete_keeps_every_branch_by_default(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_an_empty_current_branch_is_called_out_and_not_archived_alone(
-    tmp_path, monkeypatch
-):
+async def test_an_empty_current_branch_is_called_out_and_not_archived_alone(tmp_path, monkeypatch):
     """The current-branch option says it is empty; the default archive is not (T1)."""
     adapter = _Branching(tmp_path / "store", {"one": _emptied()})
     app = SxApp()
@@ -1060,7 +1068,7 @@ class _OwnerFails(_Unavailable):
 
 @pytest.mark.asyncio
 async def test_a_store_handed_over_names_its_owner_in_the_tree(tmp_path, monkeypatch):
-    """"store belongs to …" replaces "not installed", as ``sx harnesses`` says."""
+    """ "store belongs to …" replaces "not installed", as ``sx harnesses`` says."""
     adapters = [
         _HandedOver(tmp_path / "a", {}),
         _OwnerFails(tmp_path / "b", {}),

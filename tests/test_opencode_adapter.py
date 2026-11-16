@@ -22,6 +22,7 @@ from sx.model import OrphanKind, Role
 
 # --- synthetic database builder -------------------------------------------
 
+
 def _opencode_root(home_dir: Path) -> Path:
     """Return (and create) the opencode store under a fake home."""
     root = home_dir / ".local" / "share" / "opencode"
@@ -107,12 +108,11 @@ def _add_session(
                 (pid, mid, sid, clock, json.dumps(data)),
             )
     if extra_rows:
-        con.execute("INSERT INTO todo(id, session_id, data) VALUES (?,?,?)",
-                    (f"{sid}_todo", sid, "{}"))
-        con.execute("INSERT INTO session_share(session_id, id) VALUES (?,?)",
-                    (sid, f"{sid}_share"))
-        con.execute("INSERT INTO session_message(session_id, id) VALUES (?,?)",
-                    (sid, f"{sid}_sm"))
+        con.execute(
+            "INSERT INTO todo(id, session_id, data) VALUES (?,?,?)", (f"{sid}_todo", sid, "{}")
+        )
+        con.execute("INSERT INTO session_share(session_id, id) VALUES (?,?)", (sid, f"{sid}_share"))
+        con.execute("INSERT INTO session_message(session_id, id) VALUES (?,?)", (sid, f"{sid}_sm"))
 
     sidecar = root / "storage" / "session_diff" / f"{sid}.json"
     if with_sidecar:
@@ -143,6 +143,7 @@ def _connect(adapter: OpencodeAdapter) -> sqlite3.Connection:
 
 # --- tests -----------------------------------------------------------------
 
+
 def test_available_requires_db(adapter):
     """available() is False until the db file exists, True once created."""
     assert adapter.available() is False
@@ -153,11 +154,23 @@ def test_available_requires_db(adapter):
 def test_discovery_lists_top_level_skips_children(adapter):
     """Top-level sessions are listed; sub-agent (parent_id) sessions are hidden."""
     con = _connect(adapter)
-    _add_session(con, adapter._store(), "ses_top", directory="/proj/a",
-                 title="Top session", turns=[("user", [("text", "hi")])])
-    _add_session(con, adapter._store(), "ses_child", directory="/proj/a",
-                 title="Child", parent_id="ses_top",
-                 turns=[("assistant", [("text", "sub")])])
+    _add_session(
+        con,
+        adapter._store(),
+        "ses_top",
+        directory="/proj/a",
+        title="Top session",
+        turns=[("user", [("text", "hi")])],
+    )
+    _add_session(
+        con,
+        adapter._store(),
+        "ses_child",
+        directory="/proj/a",
+        title="Child",
+        parent_id="ses_top",
+        turns=[("assistant", [("text", "sub")])],
+    )
     con.commit()
     con.close()
 
@@ -174,15 +187,22 @@ def test_load_reconstructs_transcript_in_order(adapter):
     """Transcript is user text, assistant reasoning(thinking), assistant text — in order."""
     con = _connect(adapter)
     _add_session(
-        con, adapter._store(), "ses_x", directory="/proj/b", title="T",
+        con,
+        adapter._store(),
+        "ses_x",
+        directory="/proj/b",
+        title="T",
         turns=[
             ("user", [("text", "What is software?")]),
-            ("assistant", [
-                ("step-start", None),
-                ("reasoning", "let me think"),
-                ("text", "Software is instructions."),
-                ("step-finish", None),
-            ]),
+            (
+                "assistant",
+                [
+                    ("step-start", None),
+                    ("reasoning", "let me think"),
+                    ("text", "Software is instructions."),
+                    ("step-finish", None),
+                ],
+            ),
         ],
     )
     con.commit()
@@ -206,18 +226,22 @@ def test_tool_part_maps_to_tool_role_and_others_skip(adapter):
     )
     con.execute(
         "INSERT INTO message(id, session_id, time_created, data) "
-        "VALUES ('m', 'ses_t', 1780000000000, ?)", (json.dumps({"role": "assistant"}),)
+        "VALUES ('m', 'ses_t', 1780000000000, ?)",
+        (json.dumps({"role": "assistant"}),),
     )
     parts = [
-        ("p1", json.dumps({"type": "tool", "tool": "bash",
-                           "state": {"output": "hello from shell"}})),
+        (
+            "p1",
+            json.dumps({"type": "tool", "tool": "bash", "state": {"output": "hello from shell"}}),
+        ),
         ("p2", json.dumps({"type": "snapshot"})),
         ("p3", json.dumps({"type": "file", "text": "ignored"})),
     ]
     for i, (pid, data) in enumerate(parts):
         con.execute(
             "INSERT INTO part(id, message_id, session_id, time_created, data) "
-            "VALUES (?, 'm', 'ses_t', ?, ?)", (pid, 1780000000001 + i, data)
+            "VALUES (?, 'm', 'ses_t', ?, ?)",
+            (pid, 1780000000001 + i, data),
         )
     con.commit()
     con.close()
@@ -233,11 +257,22 @@ def test_tool_part_maps_to_tool_role_and_others_skip(adapter):
 def test_cascade_delete_removes_only_target_session(adapter):
     """Deleting D removes all its rows + sidecar; S is fully intact; db survives."""
     con = _connect(adapter)
-    sc_d = _add_session(con, adapter._store(), "ses_D", directory="/p/d", title="Del",
-                        turns=[("user", [("text", "q")]),
-                               ("assistant", [("text", "a")])])
-    sc_s = _add_session(con, adapter._store(), "ses_S", directory="/p/s", title="Keep",
-                        turns=[("user", [("text", "keep")])])
+    sc_d = _add_session(
+        con,
+        adapter._store(),
+        "ses_D",
+        directory="/p/d",
+        title="Del",
+        turns=[("user", [("text", "q")]), ("assistant", [("text", "a")])],
+    )
+    sc_s = _add_session(
+        con,
+        adapter._store(),
+        "ses_S",
+        directory="/p/s",
+        title="Keep",
+        turns=[("user", [("text", "keep")])],
+    )
     con.commit()
     con.close()
 
@@ -259,9 +294,9 @@ def test_cascade_delete_removes_only_target_session(adapter):
     assert rows("SELECT COUNT(*) FROM todo WHERE session_id='ses_S'") == 1
     con.close()
 
-    assert adapter._db_path().exists()      # db file NOT removed
-    assert not sc_d.exists()                # D sidecar unlinked
-    assert sc_s.exists()                    # S sidecar remains
+    assert adapter._db_path().exists()  # db file NOT removed
+    assert not sc_d.exists()  # D sidecar unlinked
+    assert sc_s.exists()  # S sidecar remains
     assert sc_d in result.removed
     assert adapter._db_path() not in result.removed  # db never reported removed
     assert result.note is not None and "db row" in result.note
@@ -270,8 +305,14 @@ def test_cascade_delete_removes_only_target_session(adapter):
 def test_dry_run_changes_nothing(adapter):
     """A dry-run lists the sidecar + a row-count note but mutates nothing."""
     con = _connect(adapter)
-    sc = _add_session(con, adapter._store(), "ses_p", directory="/p", title="Prev",
-                      turns=[("user", [("text", "x")])])
+    sc = _add_session(
+        con,
+        adapter._store(),
+        "ses_p",
+        directory="/p",
+        title="Prev",
+        turns=[("user", [("text", "x")])],
+    )
     con.commit()
     con.close()
 
@@ -291,8 +332,14 @@ def test_dry_run_changes_nothing(adapter):
 def test_find_orphans_flags_stray_sidecar(adapter):
     """A sidecar with no matching session row is a STRAY_TEMP orphan; delete is file-only."""
     con = _connect(adapter)
-    _add_session(con, adapter._store(), "ses_live", directory="/p", title="Live",
-                 turns=[("user", [("text", "x")])])
+    _add_session(
+        con,
+        adapter._store(),
+        "ses_live",
+        directory="/p",
+        title="Live",
+        turns=[("user", [("text", "x")])],
+    )
     con.commit()
     con.close()
     ghost = adapter._store() / "storage" / "session_diff" / "ghost.json"
@@ -317,8 +364,14 @@ def test_find_orphans_flags_stray_sidecar(adapter):
 def test_dead_project_sets_is_orphan(adapter):
     """A session whose directory no longer exists is flagged is_orphan."""
     con = _connect(adapter)
-    _add_session(con, adapter._store(), "ses_dead", directory="/nonexistent/xyz",
-                 title="Dead", turns=[("user", [("text", "x")])])
+    _add_session(
+        con,
+        adapter._store(),
+        "ses_dead",
+        directory="/nonexistent/xyz",
+        title="Dead",
+        turns=[("user", [("text", "x")])],
+    )
     con.commit()
     con.close()
 
@@ -342,8 +395,14 @@ def test_wal_mode_db_is_readable(adapter):
     """A WAL-mode db (opencode's real mode) is discoverable read-only."""
     con = _connect(adapter)
     con.execute("PRAGMA journal_mode=WAL")
-    _add_session(con, adapter._store(), "ses_wal", directory="/p", title="Wal",
-                 turns=[("user", [("text", "hi")])])
+    _add_session(
+        con,
+        adapter._store(),
+        "ses_wal",
+        directory="/p",
+        title="Wal",
+        turns=[("user", [("text", "hi")])],
+    )
     con.commit()
     con.close()
     sessions = list(adapter.discover())
@@ -363,8 +422,14 @@ def test_a_caller_that_stops_after_one_session_leaves_no_connection_open(adapter
     """``next(iter(discover()))`` used to hold the database open until the generator was collected."""
     con = _connect(adapter)
     for sid in ("ses_a", "ses_b"):
-        _add_session(con, adapter._store(), sid, directory="/p", title=sid,
-                     turns=[("user", [("text", "hi")])])
+        _add_session(
+            con,
+            adapter._store(),
+            sid,
+            directory="/p",
+            title=sid,
+            turns=[("user", [("text", "hi")])],
+        )
     con.commit()
     con.close()
     opened: list[sqlite3.Connection] = []

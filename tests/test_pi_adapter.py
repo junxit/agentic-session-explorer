@@ -167,12 +167,18 @@ def _move(adapter: PiAdapter, old: Path = OLD, new: Path = NEW, *, dry_run: bool
 @pytest.mark.parametrize(
     ("directory", "folder"),
     [
-        ("/Users/Jade/source/junxit/agentic-session-explorer",
-         "--Users-Jade-source-junxit-agentic-session-explorer--"),
-        ("/Users/Jade/.extra/source/git_clones/usgpo/api",
-         "--Users-Jade-.extra-source-git_clones-usgpo-api--"),
-        ("/Users/Jade/Documents/Professional and Social Memberships/IEEE",
-         "--Users-Jade-Documents-Professional and Social Memberships-IEEE--"),
+        (
+            "/Users/Jade/source/junxit/agentic-session-explorer",
+            "--Users-Jade-source-junxit-agentic-session-explorer--",
+        ),
+        (
+            "/Users/Jade/.extra/source/git_clones/usgpo/api",
+            "--Users-Jade-.extra-source-git_clones-usgpo-api--",
+        ),
+        (
+            "/Users/Jade/Documents/Professional and Social Memberships/IEEE",
+            "--Users-Jade-Documents-Professional and Social Memberships-IEEE--",
+        ),
         ("/Volumes/Archive/us-congress-pipeline", "--Volumes-Archive-us-congress-pipeline--"),
         ("/Users/Jade/source/junxit/forks--", "--Users-Jade-source-junxit-forks----"),
         ("/private/tmp/scratch/", "--private-tmp-scratch--"),
@@ -287,8 +293,10 @@ _HEADER_LINE = '{"type":"session","version":3,"id":"S1","cwd":"/old/proj"}'
         (['{"type":"label","id":"l1","parentId":null,"targetId":"x"}'], TranscriptKind.FRAGMENT),
         # Only the first line itself makes debris: an entry after a blank, a
         # null or a damaged line is a session that lost its header.
-        (["", "null", "{not json", '{"type":"usage","id":"x","parentId":"y"}'],
-         TranscriptKind.UNRECOGNIZED),
+        (
+            ["", "null", "{not json", '{"type":"usage","id":"x","parentId":"y"}'],
+            TranscriptKind.UNRECOGNIZED,
+        ),
         (["{not json", '{"type":"usage","id":"x","parentId":"y"}'], TranscriptKind.UNRECOGNIZED),
         (["null", '{"type":"usage","id":"x","parentId":"y"}'], TranscriptKind.UNRECOGNIZED),
         (['{"type":"message","id":"u1"}'], TranscriptKind.UNRECOGNIZED),
@@ -329,7 +337,10 @@ def test_a_pipe_named_like_a_transcript_is_never_opened(tmp_path):
 
     assert not worker.is_alive(), "a pipe was opened"
     assert found == {
-        "kind": TranscriptKind.UNRECOGNIZED, "busy": True, "evidence": [], "sessions": ["S1"]
+        "kind": TranscriptKind.UNRECOGNIZED,
+        "busy": True,
+        "evidence": [],
+        "sessions": ["S1"],
     }
 
 
@@ -485,9 +496,7 @@ def test_the_title_is_the_whole_first_user_text_as_pis_list_shows_it(tmp_path):
 
 def test_a_multi_line_prompt_titles_the_session_whole(tmp_path):
     """Pi lists the whole first message, its newlines turned into spaces."""
-    _transcript(
-        tmp_path, [_header(), _user("u1", None, "Refactor the parser\nthen add tests\x07")]
-    )
+    _transcript(tmp_path, [_header(), _user("u1", None, "Refactor the parser\nthen add tests\x07")])
     assert _only(PiAdapter()).title == "Refactor the parser then add tests"
 
 
@@ -602,16 +611,23 @@ def test_a_failed_assistant_turn_shows_its_error():
     """``stopReason: error`` adds the error message, so a failed turn is visible."""
     bare = _render(
         _message_entry(
-            {"role": "assistant", "content": [], "stopReason": "error",
-             "errorMessage": "rate limited"}
+            {
+                "role": "assistant",
+                "content": [],
+                "stopReason": "error",
+                "errorMessage": "rate limited",
+            }
         )
     )
     assert bare.text == "Error: rate limited"
 
     partial = _render(
         _message_entry(
-            {"role": "assistant", "content": [{"type": "text", "text": "partial"}],
-             "stopReason": "error"}
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "partial"}],
+                "stopReason": "error",
+            }
         )
     )
     assert partial.text == "partial\n\nError: Unknown error"  # Pi's words for a missing message
@@ -651,8 +667,11 @@ def test_an_aborted_turn_with_tool_calls_says_the_operation_was_aborted():
 
 def test_a_truncated_turn_says_so():
     """``stopReason: length``: Pi adds its truncation notice after the partial text."""
-    message = {"role": "assistant", "content": [{"type": "text", "text": "The answer is"}],
-               "stopReason": "length"}
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "The answer is"}],
+        "stopReason": "length",
+    }
     assert _render(_message_entry(message)).text == (
         "The answer is\n\nResponse was truncated before completion."
     )
@@ -669,17 +688,20 @@ def test_tool_results_summarize_name_and_error_and_truncate():
     """The summary names the tool; the output is cut at 200 characters."""
     result = _render(
         _message_entry(
-            {"role": "toolResult", "toolCallId": "c1", "toolName": "bash",
-             "content": [{"type": "text", "text": "x" * 300}], "isError": False}
+            {
+                "role": "toolResult",
+                "toolCallId": "c1",
+                "toolName": "bash",
+                "content": [{"type": "text", "text": "x" * 300}],
+                "isError": False,
+            }
         )
     )
     assert (result.role, result.tool_summary) == (Role.TOOL, "bash result")
     assert result.text == "x" * 200 + "…"
 
     failed = _render(
-        _message_entry(
-            {"role": "toolResult", "toolName": "edit", "content": [], "isError": True}
-        )
+        _message_entry({"role": "toolResult", "toolName": "edit", "content": [], "isError": True})
     )
     assert (failed.tool_summary, failed.text) == ("edit result (error)", "")
 
@@ -691,8 +713,14 @@ def test_bash_executions_show_command_output_and_exit_code():
     """A ``!`` command: the command on one line, its output, and how it exited."""
     run = _render(
         _message_entry(
-            {"role": "bashExecution", "command": "git status\n  --short",
-             "output": "M file.py\n", "exitCode": 1, "cancelled": False, "truncated": False}
+            {
+                "role": "bashExecution",
+                "command": "git status\n  --short",
+                "output": "M file.py\n",
+                "exitCode": 1,
+                "cancelled": False,
+                "truncated": False,
+            }
         )
     )
     assert (run.role, run.tool_summary) == (Role.TOOL, "bash: git status --short")
@@ -705,16 +733,18 @@ def test_bash_executions_show_command_output_and_exit_code():
     assert long.text == "o" * 200 + "…"
 
     cancelled = _render(
-        _message_entry({"role": "bashExecution", "command": "sleep 9", "output": "",
-                        "cancelled": True})
+        _message_entry(
+            {"role": "bashExecution", "command": "sleep 9", "output": "", "cancelled": True}
+        )
     )
     assert cancelled.text == ""
 
 
 def test_extension_messages_show_only_when_displayed():
     """``custom`` (and v2's ``hookMessage``) appear only when Pi shows them."""
-    shown = _render(_message_entry({"role": "custom", "customType": "x", "content": "note",
-                                    "display": True}))
+    shown = _render(
+        _message_entry({"role": "custom", "customType": "x", "content": "note", "display": True})
+    )
     assert (shown.role, shown.text) == (Role.OTHER, "note")
     assert _render(_message_entry({"role": "custom", "content": "quiet", "display": False})) is None
     legacy = _render(_message_entry({"role": "hookMessage", "content": "old", "display": True}))
@@ -729,8 +759,16 @@ def test_roles_pi_does_not_show_are_skipped(role):
 
 def test_compactions_summaries_and_model_changes_render():
     """The non-message entries a reader needs to follow the session."""
-    compaction = _render(_entry("c", None, "compaction", summary="User discussed X",
-                                firstKeptEntryId="c", tokensBefore=5))
+    compaction = _render(
+        _entry(
+            "c",
+            None,
+            "compaction",
+            summary="User discussed X",
+            firstKeptEntryId="c",
+            tokensBefore=5,
+        )
+    )
     assert compaction.role is Role.SYSTEM
     assert compaction.text == "Context compacted\n\nUser discussed X"
     assert _render(_entry("c", None, "compaction")).text == "Context compacted"
@@ -738,12 +776,14 @@ def test_compactions_summaries_and_model_changes_render():
     summary = _render(_entry("b", None, "branch_summary", fromId="f", summary="Tried approach A"))
     assert (summary.role, summary.text) == (Role.SYSTEM, "Branch summary: Tried approach A")
 
-    model = _render(_entry("m", None, "model_change", provider="anthropic",
-                           modelId="claude-sonnet-4-5"))
+    model = _render(
+        _entry("m", None, "model_change", provider="anthropic", modelId="claude-sonnet-4-5")
+    )
     assert (model.role, model.text) == (Role.SYSTEM, "model → anthropic/claude-sonnet-4-5")
 
-    injected = _render(_entry("i", None, "custom_message", customType="x", content="Injected",
-                              display=True))
+    injected = _render(
+        _entry("i", None, "custom_message", customType="x", content="Injected", display=True)
+    )
     assert (injected.role, injected.text) == (Role.OTHER, "Injected")
     hidden = _entry("i", None, "custom_message", customType="x", content="Injected", display=False)
     assert _render(hidden) is None
@@ -775,21 +815,36 @@ def test_bookkeeping_entries_are_skipped(entry):
         {"type": "message", "message": "a string"},
         {"type": "message", "message": {"role": ["user"], "content": "x"}},
         {"type": "message", "message": {"role": "user", "content": 42}},
-        {"type": "message",
-         "message": {"role": "user", "content": [None, 3, "s", {"type": "text", "text": 5}]}},
-        {"type": "message",
-         "message": {"role": "assistant", "content": [{"type": "toolCall", "name": {"x": 1}}],
-                     "stopReason": "error", "errorMessage": 3}},
-        {"type": "message",
-         "message": {"role": "toolResult", "content": {"type": "text"}, "toolName": ["x"]}},
-        {"type": "message",
-         "message": {"role": "bashExecution", "command": 5, "output": None, "exitCode": True}},
+        {
+            "type": "message",
+            "message": {"role": "user", "content": [None, 3, "s", {"type": "text", "text": 5}]},
+        },
+        {
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "toolCall", "name": {"x": 1}}],
+                "stopReason": "error",
+                "errorMessage": 3,
+            },
+        },
+        {
+            "type": "message",
+            "message": {"role": "toolResult", "content": {"type": "text"}, "toolName": ["x"]},
+        },
+        {
+            "type": "message",
+            "message": {"role": "bashExecution", "command": 5, "output": None, "exitCode": True},
+        },
         {"type": "compaction", "summary": {"nested": True}},
         {"type": "model_change", "provider": ["a"], "modelId": None},
         {"type": "custom_message", "display": True, "content": [{"type": "image"}]},
         {"type": ["message"], "timestamp": 12345},
-        {"type": "message", "timestamp": "not a date",
-         "message": {"role": "user", "content": "ok"}},
+        {
+            "type": "message",
+            "timestamp": "not a date",
+            "message": {"role": "user", "content": "ok"},
+        },
     ],
 )
 def test_malformed_entries_never_raise(entry):
@@ -806,8 +861,11 @@ def test_a_version_1_file_reads_linearly(tmp_path):
     records = [
         {"type": "session", "id": "V1", "timestamp": TS, "cwd": str(OLD)},
         {"type": "message", "timestamp": TS, "message": {"role": "user", "content": "one"}},
-        {"type": "message", "timestamp": TS,
-         "message": {"role": "assistant", "content": [{"type": "text", "text": "two"}]}},
+        {
+            "type": "message",
+            "timestamp": TS,
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "two"}]},
+        },
         {"type": "model_change", "timestamp": TS, "provider": "openai", "modelId": "gpt-4o"},
         {"type": "message", "timestamp": TS, "message": {"role": "user", "content": "three"}},
     ]
@@ -824,8 +882,11 @@ def test_a_version_1_file_reads_linearly(tmp_path):
 
 def test_entries_without_ids_under_a_v3_header_read_linearly(tmp_path):
     """One entry missing its id is enough to give up on the tree."""
-    copied = {"type": "message", "timestamp": TS,
-              "message": {"role": "user", "content": "copied without an id"}}
+    copied = {
+        "type": "message",
+        "timestamp": TS,
+        "message": {"role": "user", "content": "copied without an id"},
+    }
     _transcript(tmp_path, [_header(), _user("u1", None, "first"), copied, _user("u2", "u1", "x")])
     adapter = PiAdapter()
 
@@ -887,8 +948,10 @@ def test_other_branches_are_labeled_by_where_they_fork(tmp_path):
     transcript = adapter.load_transcript(session)
 
     assert [(b.label, _texts(b.messages)) for b in transcript.branches] == [
-        ("forks from the current branch after message 2",
-         ["second question", "second answer", "follow-up A"]),
+        (
+            "forks from the current branch after message 2",
+            ["second question", "second answer", "follow-up A"],
+        ),
         ("forks from other branch 1 after message 2", ["follow-up B"]),
     ]
     assert transcript.hidden == 4
@@ -1227,8 +1290,13 @@ def test_pi_yields_a_store_carrying_oh_my_pis_marks(tmp_path, marker):
 
 @pytest.mark.parametrize(
     "name",
-    ["S.jsonl.1730000000.bak", "S.jsonl.0123abcd.bak", "S.jsonl.lock", ".S.jsonl.lock",
-     ".S.jsonl.lock.os"],
+    [
+        "S.jsonl.1730000000.bak",
+        "S.jsonl.0123abcd.bak",
+        "S.jsonl.lock",
+        ".S.jsonl.lock",
+        ".S.jsonl.lock.os",
+    ],
 )
 def test_a_name_alone_is_not_oh_my_pis_mark(tmp_path, name):
     """A user's ``cp S.jsonl S.jsonl.$(date +%s).bak`` must not hide a whole Pi store.
@@ -1454,9 +1522,7 @@ def test_a_folder_whose_projects_are_all_gone_is_dead(tmp_path):
     orphans = PiAdapter().find_orphans()
 
     assert [(o.kind, o.paths) for o in orphans] == [(OrphanKind.DEAD_PROJECT, [folder])]
-    assert orphans[0].reason == (
-        "project directories no longer exist: /sx-gone/a-b, /sx-gone/a/b"
-    )
+    assert orphans[0].reason == ("project directories no longer exist: /sx-gone/a-b, /sx-gone/a/b")
     assert orphans[0].size_bytes > 0
 
 
@@ -1494,7 +1560,9 @@ def test_every_orphan_lies_inside_the_store(tmp_path):
     orphans = adapter.find_orphans()
 
     assert {o.kind for o in orphans} == {
-        OrphanKind.EMPTY, OrphanKind.STRAY_TEMP, OrphanKind.DEAD_PROJECT
+        OrphanKind.EMPTY,
+        OrphanKind.STRAY_TEMP,
+        OrphanKind.DEAD_PROJECT,
     }
     for orphan in orphans:
         for path in orphan.paths:
@@ -1744,8 +1812,9 @@ def test_a_fork_link_is_never_pointed_at_nothing(tmp_path):
     before = child.read_bytes()
     result = MoveResult()
 
-    PiAdapter()._repoint_fork_links({parent: tmp_path / "nowhere" / parent.name}, {}, result,
-                                    dry_run=False)
+    PiAdapter()._repoint_fork_links(
+        {parent: tmp_path / "nowhere" / parent.name}, {}, result, dry_run=False
+    )
 
     assert child.read_bytes() == before and "nothing is at" in result.skipped[child]
 

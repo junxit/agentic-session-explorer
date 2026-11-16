@@ -112,9 +112,7 @@ def _what_stayed(orphan: Orphan, result: DeleteResult) -> Orphan:
     stayed = [p for p in orphan.paths if any(r == p or p in r.parents for r in refused)]
     if not stayed:
         return orphan
-    return replace(
-        orphan, paths=stayed, size_bytes=max(0, orphan.size_bytes - result.freed_bytes)
-    )
+    return replace(orphan, paths=stayed, size_bytes=max(0, orphan.size_bytes - result.freed_bytes))
 
 
 class _Dialog(ModalScreen):
@@ -346,8 +344,12 @@ class ConfirmDeleteScreen(_Dialog):
                 yield Input(id="confirm-input", placeholder=self._typed_phrase)
             with Horizontal(id="buttons"):
                 yield Button("Cancel", variant="primary", id="cancel")
-                yield Button("Delete permanently", variant="error", id="confirm",
-                             disabled=bool(self._typed_phrase))
+                yield Button(
+                    "Delete permanently",
+                    variant="error",
+                    id="confirm",
+                    disabled=bool(self._typed_phrase),
+                )
 
     def on_mount(self) -> None:
         """Focus the safest control by default, and fit the dialog on screen.
@@ -586,9 +588,7 @@ class OrphanScreen(Screen):
             )
         self.query_one("#orphan-summary", Static).update(self._summary())
         if not self._orphans:
-            self.query_one("#orphan-summary", Static).update(
-                "No orphans found.   [esc] back"
-            )
+            self.query_one("#orphan-summary", Static).update("No orphans found.   [esc] back")
 
     def action_go_back(self) -> None:
         """Return to the main browser."""
@@ -630,9 +630,7 @@ class OrphanScreen(Screen):
         result = self._on_delete(target, refused=refused)
         if result.failed:
             reason = next(iter(result.refused.values()), "unknown reason")
-            self.app.notify(
-                f"Not deleted — {toast_safe(reason)}", severity="error", timeout=10
-            )
+            self.app.notify(f"Not deleted — {toast_safe(reason)}", severity="error", timeout=10)
             return
         if result.refused:
             self._orphans[self._orphans.index(orphan)] = _what_stayed(orphan, result)
@@ -643,8 +641,7 @@ class OrphanScreen(Screen):
             if result.note:
                 done.append(toast_safe(result.note))
             self.app.notify(
-                f"Partly deleted — {_stayed_notice(result.refused)}. "
-                f"Removed {' · '.join(done)}.",
+                f"Partly deleted — {_stayed_notice(result.refused)}. Removed {' · '.join(done)}.",
                 severity="warning",
                 timeout=10,
             )
@@ -703,8 +700,7 @@ class OrphanScreen(Screen):
             if refused:
                 done += f" · {len(refused)} refused"
             self.app.notify(
-                f"Partly deleted — {_stayed_notice(stayed)}. "
-                f"{done} · freed {human_size(freed)}.",
+                f"Partly deleted — {_stayed_notice(stayed)}. {done} · freed {human_size(freed)}.",
                 severity="warning",
                 timeout=10,
             )
@@ -980,16 +976,17 @@ class MemoryScreen(Screen):
             return "No memories found.   [esc] back"
         total = sum(m.size_bytes for m in self._memories)
         projects = len({m.project_path for m in self._memories})
-        orphaned = sum(
-            1 for m in self._memories if m.origin_session_id and not m.origin_exists
-        )
+        orphaned = sum(1 for m in self._memories if m.origin_session_id and not m.origin_exists)
         bits = [
             f"{len(self._memories)} memory file(s) across {projects} project(s)",
             human_size(total),
         ]
         if orphaned:
             bits.append(f"{orphaned} from deleted session(s)")
-        return "   ".join(bits) + "   [enter] preview  [e] export  [d] delete  [D] project's  [esc] back"
+        return (
+            "   ".join(bits)
+            + "   [enter] preview  [e] export  [d] delete  [D] project's  [esc] back"
+        )
 
     def _reload_table(self) -> None:
         """Rebuild the table rows from the current memory list."""
@@ -1043,9 +1040,7 @@ class MemoryScreen(Screen):
         try:
             text = memory.path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
-            body.update(
-                Text(sanitize_text(f"Could not read {memory.path}: {exc}"), style="red")
-            )
+            body.update(Text(sanitize_text(f"Could not read {memory.path}: {exc}"), style="red"))
             return
         # Untrusted content: a memory is model-written and may quote anything.
         rendered = Text()
@@ -1111,8 +1106,7 @@ class MemoryScreen(Screen):
 
         if not removed:
             self.app.notify(
-                f"Nothing was deleted — "
-                f"{toast_safe(refused[0]) if refused else 'unknown reason'}",
+                f"Nothing was deleted — {toast_safe(refused[0]) if refused else 'unknown reason'}",
                 severity="error",
                 timeout=10,
             )

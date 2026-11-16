@@ -82,9 +82,7 @@ def test_unattributable_session_data_forces_per_session_moves(sandbox, old, new,
     assert result.refused == {}
 
 
-def test_an_entry_moving_on_its_own_is_checked_against_the_lease_its_name_gives(
-    sandbox, old, new
-):
+def test_an_entry_moving_on_its_own_is_checked_against_the_lease_its_name_gives(sandbox, old, new):
     """An artifacts directory with no transcript yet may be a session omp is writing."""
     bucket = base._bucket(old)
     bucket.mkdir(parents=True)

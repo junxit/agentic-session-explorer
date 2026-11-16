@@ -180,10 +180,14 @@ def _session(
     **header_extra,
 ) -> Path:
     """Write an aged omp transcript for ``project`` into its bucket."""
-    body = records if records is not None else [
-        _user("u1", None, f"edit {project}/src/app.py ✓"),
-        _assistant("a1", "u1", f"done in {project}"),
-    ]
+    body = (
+        records
+        if records is not None
+        else [
+            _user("u1", None, f"edit {project}/src/app.py ✓"),
+            _assistant("a1", "u1", f"done in {project}"),
+        ]
+    )
     path = _bucket(project) / _name(sid)
     header = _header(sid, str(project), **header_extra)
     _write(path, [header, *body], slot=_slot(title) if slot else None)
@@ -859,8 +863,13 @@ def test_developer_turns_are_skipped():
 def test_python_runs_render_like_bash_runs():
     """Code on one line as the summary; output and exit code as the text."""
     run = _render(
-        {"role": "pythonExecution", "code": "print(1)\nprint(2)", "output": "1\n2\n",
-         "exitCode": 0, "cancelled": False}
+        {
+            "role": "pythonExecution",
+            "code": "print(1)\nprint(2)",
+            "output": "1\n2\n",
+            "exitCode": 0,
+            "cancelled": False,
+        }
     )
     assert (run.role, run.tool_summary) == (Role.TOOL, "python: print(1) print(2)")
     assert run.text == "1\n2\n(exit code 0)"
@@ -892,8 +901,13 @@ def test_blob_references_show_as_images_and_the_blob_store_is_not_read(sandbox):
     """``blob:sha256:<hex>`` is a pointer into a shared store sx never opens."""
     blob = "blob:sha256:" + "ab" * 32
     message = _render(
-        {"role": "user", "content": [{"type": "text", "text": "look"},
-                                     {"type": "image", "data": blob, "mimeType": "image/png"}]}
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look"},
+                {"type": "image", "data": blob, "mimeType": "image/png"},
+            ],
+        }
     )
     assert message.text == "look\n[image]"
     assert not (sandbox / ".omp" / "agent" / "blobs").exists()
@@ -1429,9 +1443,7 @@ def test_gc_archives_live_outside_the_store(sandbox, tmp_path, monkeypatch, old)
     """Beside the sessions directory, never inside a store root; sx notes them."""
     adapter = OmpAdapter()
     assert adapter.archive_dir() == sandbox / ".omp" / "agent" / "archive" / "sessions"
-    assert not any(
-        is_within(adapter.archive_dir(), [root]) for root in adapter.store_roots()
-    )
+    assert not any(is_within(adapter.archive_dir(), [root]) for root in adapter.store_roots())
     assert adapter.store_notes() == []
 
     archive = _archive(old, "S1")

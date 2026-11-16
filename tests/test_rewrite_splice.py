@@ -260,8 +260,11 @@ def test_lines_the_transform_leaves_alone_stay_byte_identical(tmp_path: Path):
     lines the transform returned ``None`` for.
     """
     untouched = (
-        b'{"type":"assistant","usage":' + NUMBERS + b"}\n"
-        + ESCAPES + b"\n"
+        b'{"type":"assistant","usage":'
+        + NUMBERS
+        + b"}\n"
+        + ESCAPES
+        + b"\n"
         + b'{"type": "user", "message": {"content": [1, {"a": 1e5}], "n": 10000000000000000}}\n'
         + b'{"type":"user","cwd":"/elsewhere","n":1E5}\r\n'
         + b'{"type":"user","cwd":"/old/projects","p":1.5e-7}\n'
@@ -421,7 +424,9 @@ def test_a_value_changed_only_in_type_is_rewritten(
 
 def test_pi_re_points_its_header_in_place(tmp_path: Path):
     """Pi's header ``cwd`` moves; a message quoting the old path does not."""
-    header = b'{"type": "session", "version": 3, "id": "S1", "timestamp": "t", "cwd": "/old/proj"}\n'
+    header = (
+        b'{"type": "session", "version": 3, "id": "S1", "timestamp": "t", "cwd": "/old/proj"}\n'
+    )
     message = b'{"type":"message","message":{"content":"cd /old/proj","cost":0.000045}}\n'
 
     out = _rewrite(tmp_path, header + message, _pi(OLD, NEW))

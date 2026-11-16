@@ -369,9 +369,7 @@ class DeleteResult:
         about; a path blocked by the store-root guard, or one that errored, is.
         """
         return {
-            path: reason
-            for path, reason in self.skipped.items()
-            if "does not exist" not in reason
+            path: reason for path, reason in self.skipped.items() if "does not exist" not in reason
         }
 
     @property
@@ -533,20 +531,13 @@ class MoveResult:
     def refused(self) -> dict[Path, str]:
         """Targets actively refused or errored, excluding merely-absent ones."""
         return {
-            path: reason
-            for path, reason in self.skipped.items()
-            if "does not exist" not in reason
+            path: reason for path, reason in self.skipped.items() if "does not exist" not in reason
         }
 
     @property
     def failed(self) -> bool:
         """True if nothing was changed and at least one target was refused."""
-        return (
-            not self.moved
-            and not self.rewritten
-            and not self.note
-            and bool(self.refused)
-        )
+        return not self.moved and not self.rewritten and not self.note and bool(self.refused)
 
     def absorb(self, other: MoveResult) -> None:
         """Add what ``other`` did to this result, as one more step of the same move.
@@ -566,8 +557,7 @@ class MoveResult:
         bits: list[str] = []
         if self.rewritten:
             bits.append(
-                f"{len(self.rewritten)} file(s) re-pointed"
-                f" · {self.fields_updated} path(s) updated"
+                f"{len(self.rewritten)} file(s) re-pointed · {self.fields_updated} path(s) updated"
             )
         if self.moved:
             bits.append(f"{len(self.moved)} relocated")

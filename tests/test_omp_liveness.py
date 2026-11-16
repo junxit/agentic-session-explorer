@@ -249,7 +249,9 @@ def test_a_platform_without_a_known_layout_counts_every_lease_unknown(lease, mon
 # --- D5: every place omp may keep its leases ------------------------------------------
 
 
-def test_a_lease_omp_took_before_xdg_state_home_existed_is_still_found(sandbox, tmp_path, monkeypatch):
+def test_a_lease_omp_took_before_xdg_state_home_existed_is_still_found(
+    sandbox, tmp_path, monkeypatch
+):
     """omp fixes its lease directory at startup; ``omp config init-xdg`` later does not move it."""
     state = tmp_path / "xdg-state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
@@ -398,6 +400,11 @@ def test_the_confirmations_say_to_close_the_session_in_omp_first():
     """omp holds its lease only while it writes, so an open session may look idle."""
     caveat = OmpAdapter.open_session_caveat
     assert caveat is not None
-    for phrase in ("only while it writes", "close a session in Oh My Pi", "back whole",
-                   "two places", "header-less file"):
+    for phrase in (
+        "only while it writes",
+        "close a session in Oh My Pi",
+        "back whole",
+        "two places",
+        "header-less file",
+    ):
         assert phrase in caveat

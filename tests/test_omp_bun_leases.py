@@ -40,8 +40,15 @@ def _lease_dir(root):
         "XDG_STATE_HOME={state}\f\n",
         'XDG_STATE_HOME=\n"{state}"\n',
     ],
-    ids=["colon", "key-then-newline", "byte-order-mark", "export-tab", "carriage-return",
-         "form-feed", "quote-on-next-line"],
+    ids=[
+        "colon",
+        "key-then-newline",
+        "byte-order-mark",
+        "export-tab",
+        "carriage-return",
+        "form-feed",
+        "quote-on-next-line",
+    ],
 )
 def test_a_lease_directory_only_buns_reading_names_is_asked(sandbox, old, tmp_path, text):
     """omp, on Bun, keeps its leases where this line says; Node's reading would miss them.

@@ -122,7 +122,8 @@ def test_markers_render_as_dividers_never_as_role_turns(mode):
         if line.startswith("──"):
             start = text.plain.index(line)
             assert any(
-                span.start <= start and span.end >= start + len(line)
+                span.start <= start
+                and span.end >= start + len(line)
                 and str(span.style) == MARKER_STYLE
                 for span in text.spans
             ), f"divider {line!r} is not styled as a marker"
@@ -135,7 +136,8 @@ def test_the_hint_follows_the_header_dimmed():
     assert first.endswith("  t: change view")
     start = text.plain.index("t: change view")
     assert any(
-        span.start <= start and span.end >= start + len("t: change view")
+        span.start <= start
+        and span.end >= start + len("t: change view")
         and str(span.style) == "dim"
         for span in text.spans
     )
@@ -379,7 +381,9 @@ def _reset_to_root() -> Transcript:
             ask,
             first,
             Message(Role.OTHER, text="branch — continues after message 1", marker=True),
-            Message(Role.OTHER, text="branch — continues after message 1 (other branch)", marker=True),
+            Message(
+                Role.OTHER, text="branch — continues after message 1 (other branch)", marker=True
+            ),
             retry,
             second,
             Message(Role.OTHER, text="branch — a trailing jump", marker=True),
@@ -417,8 +421,14 @@ def test_the_appendix_of_an_empty_branch_does_not_double_the_rule():
 def test_branch_counts_include_only_branches_with_messages():
     """An empty current branch, or an empty side branch, is not counted."""
     transcript = _reset_to_root()
-    assert transcript.describe(BranchMode.TREE) == "whole tree in the order it was written — 2 branches"
-    assert transcript.describe(BranchMode.APPENDIX) == "current branch (empty), then 2 other branch(es)"
+    assert (
+        transcript.describe(BranchMode.TREE)
+        == "whole tree in the order it was written — 2 branches"
+    )
+    assert (
+        transcript.describe(BranchMode.APPENDIX)
+        == "current branch (empty), then 2 other branch(es)"
+    )
     assert transcript.describe(BranchMode.CURRENT) == (
         "current branch only — 4 message(s) on 2 other branch(es) not shown"
     )

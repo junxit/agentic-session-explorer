@@ -26,7 +26,9 @@ new = base.new
 def _pi_session(agent: Path, project: Path, sid: str = "P1") -> Path:
     """Write a session exactly as Pi writes one: header first, Pi's folder name."""
     path = agent / "sessions" / encode_session_folder(str(project)) / base._name(sid)
-    base._write(path, [base._header(sid, str(project)), base._user("u1", None, "hello pi")], slot=None)
+    base._write(
+        path, [base._header(sid, str(project)), base._user("u1", None, "hello pi")], slot=None
+    )
     base._age(path)
     return path
 
@@ -177,7 +179,9 @@ def test_omp_prefixed_keys_in_dot_env_set_the_pi_keys(sandbox):
     assert adapter.lease_dir() == sandbox / "alt-omp" / "run" / "session-owners"
 
 
-def test_the_config_roots_dot_env_follows_the_profile_omp_started_with(sandbox, tmp_path, monkeypatch):
+def test_the_config_roots_dot_env_follows_the_profile_omp_started_with(
+    sandbox, tmp_path, monkeypatch
+):
     """With a profile set, the config root's ``.env`` is ``~/.omp/profiles/<p>/.env``."""
     monkeypatch.setenv("OMP_PROFILE", "work")
     profile_root = sandbox / ".omp" / "profiles" / "work"
@@ -186,7 +190,9 @@ def test_the_config_roots_dot_env_follows_the_profile_omp_started_with(sandbox, 
         f"XDG_DATA_HOME={_xdg_data(tmp_path / 'data')}\n", encoding="utf-8"
     )
     (tmp_path / "data" / "omp" / "profiles" / "work").mkdir(parents=True)
-    assert OmpAdapter().sessions_dir() == tmp_path / "data" / "omp" / "profiles" / "work" / "sessions"
+    assert (
+        OmpAdapter().sessions_dir() == tmp_path / "data" / "omp" / "profiles" / "work" / "sessions"
+    )
 
 
 def test_pi_coding_agent_dir_in_dot_env_is_not_followed(sandbox, tmp_path):

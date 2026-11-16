@@ -153,9 +153,7 @@ class _OperationService:
 
     def is_active(self, session: Session, *, window: int = ACTIVE_WINDOW_SECONDS) -> bool:
         """Return True if the session appears to be in active use."""
-        return session_is_active(
-            self._adapters.get(session.harness), session, window=window
-        )
+        return session_is_active(self._adapters.get(session.harness), session, window=window)
 
     def _write_log(self, entry: dict) -> None:
         """Append ``entry`` to the op-log, recording any failure."""
@@ -321,10 +319,7 @@ class DeleteService(_OperationService):
             total += sum(
                 1
                 for other in found
-                if not (
-                    other.harness == session.harness
-                    and other.session_id == session.session_id
-                )
+                if not (other.harness == session.harness and other.session_id == session.session_id)
             )
         return total
 
@@ -719,9 +714,7 @@ class MoveService(_OperationService):
 
     # --- executing -------------------------------------------------------
 
-    def move(
-        self, plans: dict[str, MovePlan], *, dry_run: bool = False
-    ) -> dict[str, MoveResult]:
+    def move(self, plans: dict[str, MovePlan], *, dry_run: bool = False) -> dict[str, MoveResult]:
         """Execute every plan, recording it in the op-log as it happens.
 
         A real move writes a ``move_started`` record holding the whole plan

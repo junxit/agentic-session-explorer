@@ -44,7 +44,9 @@ def _with_artifacts(path: Path) -> Path:
 
 def _unrecognized(bucket: Path) -> dict[str, Path]:
     """Write the header-less files omp does not leave as debris, one of each kind."""
-    slot_only = base._write(bucket / base._name("A"), [base._user("u1", None, "hi")], slot=base._slot())
+    slot_only = base._write(
+        bucket / base._name("A"), [base._user("u1", None, "hi")], slot=base._slot()
+    )
     # A header line JSON cannot parse (a raw control character), which omp's
     # session list still lists by scanning its text — but will not resume.
     torn = bucket / base._name("B")
@@ -354,7 +356,9 @@ def test_a_dead_bucket_omp_wrote_a_new_session_in_is_refused(sandbox, dead):
     """A new transcript, written seconds ago: the bucket is not what was offered."""
     gone, path, orphan = dead
     gone.mkdir(parents=True)
-    fresh = base._write(path.parent / base._name("NEW"), [base._header("NEW", str(gone))], slot=base._slot())
+    fresh = base._write(
+        path.parent / base._name("NEW"), [base._header("NEW", str(gone))], slot=base._slot()
+    )
     adapter = OmpAdapter()
 
     result = adapter.delete_orphan(orphan)

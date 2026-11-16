@@ -107,12 +107,7 @@ def test_service_reports_a_refusing_adapter_honestly():
 def test_unparseable_lines_survive_a_rewrite_verbatim(tmp_path: Path):
     """iter_jsonl drops bad lines; a rewrite built on that would delete them."""
     path = tmp_path / "s.jsonl"
-    original = (
-        b'{"cwd":"/old/proj"}\n'
-        b'{ half-written line\n'
-        b"\n"
-        b'{"cwd":"/other"}\n'
-    )
+    original = b'{"cwd":"/old/proj"}\n{ half-written line\n\n{"cwd":"/other"}\n'
     path.write_bytes(original)
 
     def transform(obj):
@@ -246,9 +241,7 @@ def test_claude_config_refuses_to_merge_over_existing_settings(tmp_path, monkeyp
     """If the destination already has settings, they are never overwritten."""
     adapter, _ = _claude_store(tmp_path, monkeypatch)
     config = tmp_path / ".claude.json"
-    config.write_text(
-        json.dumps({"projects": {str(OLD): {"a": 1}, str(NEW): {"keep": True}}})
-    )
+    config.write_text(json.dumps({"projects": {str(OLD): {"a": 1}, str(NEW): {"keep": True}}}))
 
     sessions = adapter.sessions_for_project(OLD)
     plan = adapter.plan_move(sessions, OLD, NEW)

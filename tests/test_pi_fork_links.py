@@ -44,9 +44,7 @@ __all__ = ["home"]  # the autouse sandbox
 OLD, NEW = Path("/x/old"), Path("/x/new")
 
 
-def _stop_rename(
-    monkeypatch: pytest.MonkeyPatch, stop: type[BaseException], nth: int = 2
-) -> None:
+def _stop_rename(monkeypatch: pytest.MonkeyPatch, stop: type[BaseException], nth: int = 2) -> None:
     """Make the ``nth`` rename of a move raise ``stop``: Ctrl-C, or a failure."""
     real = base_module.rename_no_clobber
     calls = {"n": 0}

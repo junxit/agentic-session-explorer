@@ -363,7 +363,7 @@ def _same_place(a: Path, b: Path) -> bool:
         return True
     try:
         return a.resolve() == b.resolve()
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         return False
 
 
@@ -378,7 +378,7 @@ def _realpath(value: str | Path) -> str:
     """
     try:
         return os.path.realpath(value)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return str(value)
 
 
@@ -481,7 +481,7 @@ def _parse_line(raw: bytes) -> object:
         return None
     try:
         return json.loads(text)
-    except (ValueError, RecursionError):
+    except ValueError, RecursionError:
         return None
 
 
@@ -1016,7 +1016,7 @@ def _half_moved(src: Path, dst: Path) -> bool:
         return False
     try:
         before, after = os.lstat(src), os.lstat(dst)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     return (
         stat.S_ISREG(before.st_mode)
@@ -1036,7 +1036,7 @@ def _hand_over(exc: BaseException, partial: MoveResult) -> None:
     """
     try:
         exc.partial_result = partial
-    except (AttributeError, TypeError):  # an exception that takes no attributes
+    except AttributeError, TypeError:  # an exception that takes no attributes
         pass
 
 
@@ -1177,7 +1177,7 @@ def _starts_with_title_slot(path: Path) -> bool:
             return False  # a pipe would block the read
         with path.open("rb") as fh:
             head = fh.read(_SLOT_PROBE_BYTES)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     value = _parse_line(head.split(b"\n", 1)[0])
     if not isinstance(value, dict) or value.get("type") != "title":
@@ -1296,7 +1296,7 @@ def omp_markers(agent_dir: Path, sessions_dir: Path) -> list[str]:
             evidence = _omp_session_evidence(sessions_dir)
             if evidence is not None:
                 found.append(evidence)
-    except (OSError, ValueError):  # an embedded NUL, say: nothing more can be read
+    except OSError, ValueError:  # an embedded NUL, say: nothing more can be read
         pass
     return found
 
@@ -1443,7 +1443,7 @@ class PiFormatAdapter(EncodedFolderAdapter):
                 try:
                     info = os.stat(path)
                     key: object = (info.st_dev, info.st_ino)
-                except (OSError, ValueError):
+                except OSError, ValueError:
                     key = path  # cannot be told apart from anything: kept
                 if linked or path.is_symlink():
                     aliases.append((str(path), key, path))
@@ -1515,7 +1515,7 @@ class PiFormatAdapter(EncodedFolderAdapter):
             return False
         try:
             value = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError, RecursionError):
+        except UnicodeDecodeError, ValueError, RecursionError:
             return False
         if not isinstance(value, dict):
             return False
@@ -1539,7 +1539,7 @@ class PiFormatAdapter(EncodedFolderAdapter):
         """
         try:
             info = os.stat(path)
-        except (FileNotFoundError, NotADirectoryError):
+        except FileNotFoundError, NotADirectoryError:
             return TranscriptKind.MISSING, None, None
         except OSError as exc:
             return TranscriptKind.UNRECOGNIZED, None, f"cannot be checked: {exc.strerror or exc}"
@@ -1552,7 +1552,7 @@ class PiFormatAdapter(EncodedFolderAdapter):
             return TranscriptKind.SESSION, header, None
         try:
             fragment = self.is_fragment(path)
-        except (FileNotFoundError, NotADirectoryError):
+        except FileNotFoundError, NotADirectoryError:
             return TranscriptKind.MISSING, None, None
         except OSError as exc:
             return TranscriptKind.UNRECOGNIZED, None, f"cannot be read: {exc.strerror or exc}"
@@ -2509,7 +2509,7 @@ class PiFormatAdapter(EncodedFolderAdapter):
             try:
                 if os.path.lexists(link):
                     continue
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 continue
             real = Path(_realpath(link))
             if str(real.parent.parent) != root_real:
@@ -2546,7 +2546,7 @@ class PiFormatAdapter(EncodedFolderAdapter):
                 continue
             try:
                 names = sorted(os.listdir(source))
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 continue
             for name in names:
                 path = source / name
@@ -3088,7 +3088,7 @@ class PiAdapter(PiFormatAdapter):
         """
         try:
             data = json.loads(settings.read_text(encoding="utf-8-sig"))
-        except (OSError, ValueError, UnicodeError, RecursionError):
+        except OSError, ValueError, UnicodeError, RecursionError:
             return None
         value = data.get("sessionDir") if isinstance(data, dict) else None
         return value if isinstance(value, str) and value else None

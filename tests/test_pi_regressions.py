@@ -84,8 +84,13 @@ def _header(sid: str, cwd: str | None, **extra) -> dict:
 def _user(entry_id: str, parent: str | None, text: str) -> dict:
     """Build a user message entry."""
     message = {"role": "user", "content": text, "timestamp": 1}
-    return {"type": "message", "id": entry_id, "parentId": parent, "timestamp": TS,
-            "message": message}
+    return {
+        "type": "message",
+        "id": entry_id,
+        "parentId": parent,
+        "timestamp": TS,
+        "message": message,
+    }
 
 
 def _write(path: Path, records: list[dict], *, prefix: bytes = b"") -> Path:
@@ -382,9 +387,7 @@ def test_pi_leaves_a_shared_store_alone_whatever_profile_oh_my_pi_reads(
     assert live.exists()
 
 
-def test_pi_leaves_oh_my_pis_header_first_sessions_and_backups_alone(
-    sandbox, project, monkeypatch
-):
+def test_pi_leaves_oh_my_pis_header_first_sessions_and_backups_alone(sandbox, project, monkeypatch):
     """A Pi delete would leave omp's artifacts and backup, and omp would restore it."""
     shared = sandbox / "shared-agent"
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(shared))

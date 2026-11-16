@@ -56,10 +56,22 @@ def _session(projects: Path, cwd: str, sid: str, *, folder: str | None = None) -
     path = write_compact_jsonl(
         projects / (folder or encode_project_dir(cwd)) / f"{sid}.jsonl",
         [
-            {"type": "user", "cwd": cwd, "sessionId": sid, "uuid": "u1",
-             "message": {"role": "user", "content": "hi"}, "timestamp": TS},
-            {"type": "assistant", "cwd": cwd, "sessionId": sid, "uuid": "a1",
-             "message": {"role": "assistant", "content": []}, "timestamp": TS},
+            {
+                "type": "user",
+                "cwd": cwd,
+                "sessionId": sid,
+                "uuid": "u1",
+                "message": {"role": "user", "content": "hi"},
+                "timestamp": TS,
+            },
+            {
+                "type": "assistant",
+                "cwd": cwd,
+                "sessionId": sid,
+                "uuid": "a1",
+                "message": {"role": "assistant", "content": []},
+                "timestamp": TS,
+            },
         ],
     )
     past = time.time() - 3600
@@ -229,9 +241,7 @@ def test_a_second_ctrl_c_during_the_put_back_is_recorded_as_it_is(tmp_path, stor
     }
 
 
-def test_ctrl_c_just_after_a_rewrite_is_swapped_in_still_puts_it_back(
-    tmp_path, store, monkeypatch
-):
+def test_ctrl_c_just_after_a_rewrite_is_swapped_in_still_puts_it_back(tmp_path, store, monkeypatch):
     """The rewrite reached the disk but never returned; it is undone with the rest."""
     first = _session(store, str(OLD), A)
     second = _session(store, str(OLD), B)
@@ -602,7 +612,9 @@ def test_a_harness_with_no_session_adds_nothing_it_would_not_relocate(tmp_path, 
     """Only a plan that moves something speaks for a harness no session selected."""
     root = tmp_path / "store"
     root.mkdir()
-    service = MoveService({"sessionless": _Sessionless(root, planner)}, log_path=tmp_path / "ops.log")
+    service = MoveService(
+        {"sessionless": _Sessionless(root, planner)}, log_path=tmp_path / "ops.log"
+    )
 
     assert service.plan(OLD, NEW) == {}
 

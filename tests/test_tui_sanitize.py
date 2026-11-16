@@ -320,9 +320,7 @@ async def test_the_memory_screen_cannot_drive_the_terminal(tmp_path):
     app = SxApp()
     async with app.run_test(size=(160, 45)) as pilot:
         await pilot.pause()
-        screen = MemoryScreen(
-            memories=[memory], on_export=None, on_delete=None, confirm=None
-        )
+        screen = MemoryScreen(memories=[memory], on_export=None, on_delete=None, confirm=None)
         app.push_screen(screen)
         await _wait_for(app, pilot, MemoryScreen)
         table = screen.query_one("#memory-table", DataTable)

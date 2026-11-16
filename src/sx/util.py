@@ -194,13 +194,13 @@ def iter_jsonl(path: Path) -> Iterator[dict]:
                     continue
                 try:
                     obj = json.loads(line)
-                except (json.JSONDecodeError, ValueError, RecursionError):
+                except json.JSONDecodeError, ValueError, RecursionError:
                     # RecursionError is not a ValueError: a pathologically
                     # nested line would otherwise abort the whole read.
                     continue
                 if isinstance(obj, dict):
                     yield obj
-    except (OSError, UnicodeError):
+    except OSError, UnicodeError:
         return
 
 
@@ -274,7 +274,7 @@ def mount_unavailable(path: str | Path) -> bool:
     """
     try:
         parts = Path(path).parts
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     if len(parts) >= 3 and parts[1] in _MOUNT_PARENTS:
         try:
@@ -371,7 +371,7 @@ def repoint(value: str, old: str | Path, new: str | Path) -> str | None:
     if current == source:
         return target
     if current.startswith(source + "/"):
-        return target + current[len(source):]
+        return target + current[len(source) :]
     return None
 
 
@@ -671,7 +671,7 @@ def _splice_record(text: str, old: dict, new: object) -> str | None:
         descend.update(path[:depth] for path in edits for depth in range(1, len(path) + 1))
         start = _WS_RE.match(text).end()
         end = walk(start, ()) if text.startswith("{", start) else None
-    except (ValueError, TypeError, StopIteration, RecursionError):
+    except ValueError, TypeError, StopIteration, RecursionError:
         return None
     if end is None or placed != edits.keys() or _WS_RE.match(text, end).end() != len(text):
         return None
@@ -713,7 +713,7 @@ def _rewrite_line(body: bytes, old: dict, new: object) -> bytes:
         try:
             if dumps_record(json.loads(spliced)) == expected:
                 return spliced.encode("utf-8")
-        except (ValueError, RecursionError):
+        except ValueError, RecursionError:
             pass
     return expected
 
@@ -796,7 +796,7 @@ def rewrite_jsonl(path: Path, transform, *, dry_run: bool = False) -> tuple[int,
                         changed += 1
                     elif updated is not None:
                         body = raw.rstrip(b"\r\n")
-                        ending = raw[len(body):] or b"\n"
+                        ending = raw[len(body) :] or b"\n"
                         replacement = _rewrite_line(body, obj, updated) + ending
                         changed += 1
                 if dropped:
@@ -841,7 +841,7 @@ def _parse_record(raw: bytes) -> dict | None:
         return None
     try:
         obj = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
+    except UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError:
         return None
     return obj if isinstance(obj, dict) else None
 

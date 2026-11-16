@@ -170,15 +170,19 @@ class _GroupingAdapter(_FakeAdapter):
     def find_orphans(self):
         """One orphan holding every file."""
         files = [p for p in self._orphan_files if p.exists()]
-        return [
-            Orphan(
-                harness=self.name,
-                kind=OrphanKind.STALE_SESSION,
-                paths=files,
-                reason=f"{len(files)} entry(s) belong to sessions that no longer exist",
-                size_bytes=sum(p.stat().st_size for p in files),
-            )
-        ] if files else []
+        return (
+            [
+                Orphan(
+                    harness=self.name,
+                    kind=OrphanKind.STALE_SESSION,
+                    paths=files,
+                    reason=f"{len(files)} entry(s) belong to sessions that no longer exist",
+                    size_bytes=sum(p.stat().st_size for p in files),
+                )
+            ]
+            if files
+            else []
+        )
 
 
 @pytest.mark.asyncio

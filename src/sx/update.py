@@ -130,7 +130,7 @@ def _read_cache() -> dict | None:
     """
     try:
         data = json.loads(_cache_file().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     return data if isinstance(data, dict) else None
 

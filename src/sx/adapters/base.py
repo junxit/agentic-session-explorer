@@ -96,7 +96,7 @@ def _regular_file(path: Path, simulation: object | None) -> bool:
         return stat.S_ISREG(os.lstat(path).st_mode)
     except FileNotFoundError:
         return simulation is not None
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
 
 
@@ -633,9 +633,7 @@ class JsonlFolderAdapter(HarnessAdapter):
     The default :attr:`capabilities` cover browse + orphan detection + delete.
     """
 
-    capabilities = (
-        Capability.BROWSE | Capability.ORPHANS | Capability.DELETE | Capability.MOVE
-    )
+    capabilities = Capability.BROWSE | Capability.ORPHANS | Capability.DELETE | Capability.MOVE
     fingerprints_orphans = True
 
     # --- discovery -------------------------------------------------------
@@ -1146,9 +1144,7 @@ class EncodedFolderAdapter(JsonlFolderAdapter):
                         # Old and new encode alike: nothing to relocate.
                         units.extend(self._rewrite_unit(s) for s in movable)
                     else:
-                        candidates.append(
-                            _Candidate(MoveUnit.FOLDER, folder, destination, movable)
-                        )
+                        candidates.append(_Candidate(MoveUnit.FOLDER, folder, destination, movable))
                     continue
                 foreign_total += len(stay)
                 for session in movable:
@@ -1302,7 +1298,9 @@ class EncodedFolderAdapter(JsonlFolderAdapter):
                     break
         return ordered, [candidates[index] for index in pending]
 
-    def _plan_folder(self, candidate: _Candidate, plan: MovePlan, roots: list[Path]) -> list[MoveUnit]:
+    def _plan_folder(
+        self, candidate: _Candidate, plan: MovePlan, roots: list[Path]
+    ) -> list[MoveUnit]:
         """Plan one folder's relocation and cut it into units.
 
         Args:
@@ -1562,9 +1560,7 @@ class EncodedFolderAdapter(JsonlFolderAdapter):
                 return candidate
         return None
 
-    def _foreign_transcripts(
-        self, folder: Path, selected: list[Session], old: Path
-    ) -> list[Path]:
+    def _foreign_transcripts(self, folder: Path, selected: list[Session], old: Path) -> list[Path]:
         """Return transcripts in ``folder`` that belong to a colliding project.
 
         Two project paths that differ only in punctuation encode to the same
@@ -1594,17 +1590,11 @@ class EncodedFolderAdapter(JsonlFolderAdapter):
             if path in chosen:
                 continue
             project = self.recorded_project(path)
-            if (
-                project
-                and folder.name in self.folder_names(project)
-                and not is_under(project, old)
-            ):
+            if project and folder.name in self.folder_names(project) and not is_under(project, old):
                 foreign.append(path)
         return foreign
 
-    def _plan_relocation(
-        self, src: Path, dst: Path, plan: MovePlan, roots: list[Path]
-    ) -> None:
+    def _plan_relocation(self, src: Path, dst: Path, plan: MovePlan, roots: list[Path]) -> None:
         """Plan moving a whole project folder, merging when the target will exist.
 
         A destination folder already exists whenever the harness has been run at

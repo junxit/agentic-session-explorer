@@ -31,8 +31,12 @@ def _user(entry_id: str, parent: str | None, text: str) -> dict:
 
 def _assistant(entry_id: str, parent: str | None, text: str) -> dict:
     """Build an assistant message entry holding one text block."""
-    message = {"role": "assistant", "content": [{"type": "text", "text": text}],
-               "stopReason": "stop", "timestamp": 2}
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": text}],
+        "stopReason": "stop",
+        "timestamp": 2,
+    }
     return _entry(entry_id, parent, message=message)
 
 
@@ -127,7 +131,8 @@ def test_a_branch_from_bookkeeping_before_any_message_continues_from_the_start()
 
     assert [b.label for b in transcript.branches] == ["forks from the start of the current branch"]
     assert _view(entries, BranchMode.TREE)[2] == (
-        True, "branch — continues from the start (current branch)"
+        True,
+        "branch — continues from the start (current branch)",
     )
 
 

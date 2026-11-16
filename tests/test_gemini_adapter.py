@@ -66,9 +66,7 @@ def _build_chat(tmp_path: Path) -> tuple[Path, str]:
         {"$set": {"lastUpdated": "2026-05-30T13:27:08Z"}},
     ]
     chat = chats / "session-1.jsonl"
-    chat.write_text(
-        "".join(json.dumps(l) + "\n" for l in lines), encoding="utf-8"
-    )
+    chat.write_text("".join(json.dumps(l) + "\n" for l in lines), encoding="utf-8")
     return chat, project_root
 
 

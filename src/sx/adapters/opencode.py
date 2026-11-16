@@ -89,7 +89,7 @@ def _ms_to_dt(value: object) -> datetime | None:
         return None
     try:
         return datetime.fromtimestamp(value / 1000.0)
-    except (OverflowError, OSError, ValueError):
+    except OverflowError, OSError, ValueError:
         return None
 
 
@@ -113,7 +113,7 @@ def _loads(data: object) -> dict:
     if isinstance(data, str) and data:
         try:
             obj = json.loads(data)
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError, ValueError:
             return {}
         if isinstance(obj, dict):
             return obj
@@ -133,9 +133,7 @@ class OpencodeAdapter(HarnessAdapter):
 
     name = "opencode"
     display = "opencode"
-    capabilities = (
-        Capability.BROWSE | Capability.ORPHANS | Capability.DELETE | Capability.MOVE
-    )
+    capabilities = Capability.BROWSE | Capability.ORPHANS | Capability.DELETE | Capability.MOVE
     fingerprints_orphans = True
 
     # --- paths -----------------------------------------------------------
@@ -197,7 +195,7 @@ class OpencodeAdapter(HarnessAdapter):
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2.0)
             con.row_factory = sqlite3.Row
             return con
-        except (sqlite3.Error, OSError):
+        except sqlite3.Error, OSError:
             return None
 
     # --- discovery -------------------------------------------------------
@@ -235,7 +233,7 @@ class OpencodeAdapter(HarnessAdapter):
                 if not _valid_session_id(row["id"]):
                     continue  # malformed id — never build a path from it
                 session = self._session_from_row(row)
-            except (sqlite3.Error, KeyError, IndexError):
+            except sqlite3.Error, KeyError, IndexError:
                 continue
             yield session
 
@@ -436,9 +434,7 @@ class OpencodeAdapter(HarnessAdapter):
         finally:
             con.close()
         return {
-            path: "its session exists again (refused)"
-            for path in orphan.paths
-            if path.stem in live
+            path: "its session exists again (refused)" for path in orphan.paths if path.stem in live
         }
 
     # --- delete (overridden: rows, not the db file) ----------------------
@@ -500,9 +496,7 @@ class OpencodeAdapter(HarnessAdapter):
             con.execute("PRAGMA busy_timeout=2000")
             con.execute("BEGIN")
             for table in _CASCADE_TABLES:
-                cur = con.execute(
-                    f"DELETE FROM {table} WHERE session_id = ?", (sid,)
-                )
+                cur = con.execute(f"DELETE FROM {table} WHERE session_id = ?", (sid,))
                 total += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
             cur = con.execute("DELETE FROM session WHERE id = ?", (sid,))
             total += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
@@ -570,9 +564,7 @@ class OpencodeAdapter(HarnessAdapter):
                     (session_id,),
                 ).fetchone()
                 total += row[0] if row else 0
-            row = con.execute(
-                "SELECT COUNT(*) FROM session WHERE id = ?", (session_id,)
-            ).fetchone()
+            row = con.execute("SELECT COUNT(*) FROM session WHERE id = ?", (session_id,)).fetchone()
             total += row[0] if row else 0
         except sqlite3.Error:
             pass
@@ -603,18 +595,14 @@ class OpencodeAdapter(HarnessAdapter):
         pending: list[tuple[str, str, str, str, str]] = []
         for table, key_column, path_column in _REPOINTABLE_COLUMNS:
             try:
-                rows = con.execute(
-                    f"SELECT {key_column}, {path_column} FROM {table}"
-                ).fetchall()
+                rows = con.execute(f"SELECT {key_column}, {path_column} FROM {table}").fetchall()
             except sqlite3.Error:
                 continue  # older schema without this table or column
             for row in rows:
                 current = row[path_column]
                 target = repoint(current, old, new) if isinstance(current, str) else None
                 if target is not None:
-                    pending.append(
-                        (table, key_column, row[key_column], path_column, target)
-                    )
+                    pending.append((table, key_column, row[key_column], path_column, target))
         return pending
 
     def _shared_projects(self, con: sqlite3.Connection, old: Path) -> int:
@@ -624,9 +612,7 @@ class OpencodeAdapter(HarnessAdapter):
         except sqlite3.Error:
             return 0
         return sum(
-            1
-            for row in rows
-            if isinstance(row["worktree"], str) and is_under(row["worktree"], old)
+            1 for row in rows if isinstance(row["worktree"], str) and is_under(row["worktree"], old)
         )
 
     def plan_move(self, sessions: list[Session], old: Path, new: Path) -> MovePlan:
@@ -681,9 +667,7 @@ class OpencodeAdapter(HarnessAdapter):
 
         if dry_run:
             result.note = (
-                plan.note.replace("to re-point", "would be re-pointed", 1)
-                if plan.note
-                else None
+                plan.note.replace("to re-point", "would be re-pointed", 1) if plan.note else None
             )
             return result
 

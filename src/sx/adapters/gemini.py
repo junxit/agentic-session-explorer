@@ -121,7 +121,7 @@ class GeminiAdapter(JsonlFolderAdapter):
         marker = self._project_root_marker(path)
         try:
             text = marker.read_text(encoding="utf-8").strip()
-        except (OSError, FileNotFoundError):
+        except OSError, FileNotFoundError:
             return None
         return text or None
 
@@ -196,9 +196,7 @@ class GeminiAdapter(JsonlFolderAdapter):
                 continue
             if "$set" in obj:
                 changes = obj.get("$set")
-                if isinstance(changes, dict) and isinstance(
-                    changes.get("messages"), list
-                ):
+                if isinstance(changes, dict) and isinstance(changes.get("messages"), list):
                     records = list(changes["messages"])
                 continue
             if obj.get("type") in ("user",) + _ASSISTANT_TYPES:
@@ -267,9 +265,7 @@ class GeminiAdapter(JsonlFolderAdapter):
                 if isinstance(t, str):
                     bits.append(t)
                 elif isinstance(t, dict):
-                    bits.append(
-                        t.get("description") or t.get("subject") or t.get("text") or ""
-                    )
+                    bits.append(t.get("description") or t.get("subject") or t.get("text") or "")
             thinking = "\n".join(b for b in bits if b).strip()
 
         tool_names: list[str] = []
@@ -369,7 +365,7 @@ class GeminiAdapter(JsonlFolderAdapter):
             return "unreadable", None
         try:
             target = marker.read_text(encoding="utf-8").strip()
-        except (OSError, UnicodeError):
+        except OSError, UnicodeError:
             return "unreadable", None
         return ("ok", target) if target else ("empty", None)
 
@@ -517,9 +513,7 @@ class GeminiAdapter(JsonlFolderAdapter):
         return result
 
     @staticmethod
-    def _repoint_marker(
-        marker: Path, plan: MovePlan, result: MoveResult, *, dry_run: bool
-    ) -> None:
+    def _repoint_marker(marker: Path, plan: MovePlan, result: MoveResult, *, dry_run: bool) -> None:
         """Rewrite one ``.project_root`` marker, preserving its trailing bytes."""
         try:
             before = marker.stat()
@@ -535,7 +529,7 @@ class GeminiAdapter(JsonlFolderAdapter):
             result.rewritten.append(marker)
             result.fields_updated += 1
             return
-        trailer = text[len(text.rstrip()):]
+        trailer = text[len(text.rstrip()) :]
         error = write_text_atomic(marker, updated + trailer, expect=before)
         if error is not None:
             result.skipped[marker] = error
@@ -615,7 +609,7 @@ class GeminiAdapter(JsonlFolderAdapter):
                     continue
                 try:
                     target = marker.read_text(encoding="utf-8").strip()
-                except (OSError, UnicodeError):
+                except OSError, UnicodeError:
                     continue
                 if target and is_under(target, project):
                     leftovers.paths.append(hash_dir)
@@ -646,7 +640,7 @@ class GeminiAdapter(JsonlFolderAdapter):
             return []
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, ValueError, UnicodeError):
+        except OSError, json.JSONDecodeError, ValueError, UnicodeError:
             return []
         mapping = data.get("projects") if isinstance(data.get("projects"), dict) else data
         if not isinstance(mapping, dict):

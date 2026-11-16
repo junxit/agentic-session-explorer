@@ -39,9 +39,7 @@ from .base import EncodedFolderAdapter
 # (e.g. ``<command-name>/model</command-name>`` or a ``<local-command-caveat>``
 # block). They are stripped from title fallbacks so a session's title is the
 # real first prompt rather than command plumbing.
-_COMMAND_NOISE_RE = re.compile(
-    r"<(command-[a-z]+|local-command-[a-z]+)>.*?</\1>", re.DOTALL
-)
+_COMMAND_NOISE_RE = re.compile(r"<(command-[a-z]+|local-command-[a-z]+)>.*?</\1>", re.DOTALL)
 _STRAY_TAG_RE = re.compile(r"</?[a-z][a-z0-9-]*>")
 
 # Session ids are UUIDs. Cascade deletion keys off this shape so a malformed or
@@ -368,11 +366,7 @@ class ClaudeAdapter(EncodedFolderAdapter):
                 value = obj.get("aiTitle")
                 if isinstance(value, str) and value.strip():
                     ai_title = value.strip()
-            elif (
-                first_user is None
-                and rtype == "user"
-                and obj.get("isMeta") is not True
-            ):
+            elif first_user is None and rtype == "user" and obj.get("isMeta") is not True:
                 text = _clean_title_text(self._user_text(obj))
                 if text:
                     first_user = text
@@ -592,9 +586,7 @@ class ClaudeAdapter(EncodedFolderAdapter):
         if not session.project_path:
             return None
         candidate = (
-            scratchpad_root()
-            / encode_project_dir(session.project_path)
-            / session.session_id
+            scratchpad_root() / encode_project_dir(session.project_path) / session.session_id
         )
         return candidate if candidate.is_dir() else None
 
@@ -890,9 +882,7 @@ class ClaudeAdapter(EncodedFolderAdapter):
             if target is None:
                 continue
             if target in projects:
-                result.skipped[config] = (
-                    f"{target} already has Claude settings (refused)"
-                )
+                result.skipped[config] = f"{target} already has Claude settings (refused)"
                 continue
             renames[key] = target
         if not renames:
@@ -990,9 +980,7 @@ class ClaudeAdapter(EncodedFolderAdapter):
             A :class:`DeleteResult` whose ``note`` records the row count.
         """
         result = super().delete(session, dry_run=dry_run)
-        rows, error = self._drop_history_rows(
-            session_id=session.session_id, dry_run=dry_run
-        )
+        rows, error = self._drop_history_rows(session_id=session.session_id, dry_run=dry_run)
         if error is not None:
             result.skipped[self._history_path()] = error
         elif rows:
@@ -1051,7 +1039,7 @@ class ClaudeAdapter(EncodedFolderAdapter):
             return None
         try:
             data = json.loads(config.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, ValueError, UnicodeError):
+        except OSError, json.JSONDecodeError, ValueError, UnicodeError:
             return None
         projects = data.get("projects") if isinstance(data, dict) else None
         if isinstance(projects, dict):
@@ -1089,9 +1077,7 @@ class ClaudeAdapter(EncodedFolderAdapter):
                     else "removed Claude settings entry"
                 )
 
-        rows, error = self._drop_history_rows(
-            project=leftovers.project_path, dry_run=dry_run
-        )
+        rows, error = self._drop_history_rows(project=leftovers.project_path, dry_run=dry_run)
         if error is not None:
             result.skipped[self._history_path()] = error
         elif rows:
@@ -1141,7 +1127,7 @@ class ClaudeAdapter(EncodedFolderAdapter):
             os.lstat(projects)
         except FileNotFoundError:
             return set()  # no store at all, so no sessions
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return None
         folders: list[str] = []
         try:
@@ -1151,14 +1137,14 @@ class ClaudeAdapter(EncodedFolderAdapter):
                         folders.append(entry.path)
                     elif entry.is_symlink():
                         return None  # a project folder whose target is not there now
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return None  # unreadable, or a link to a store that is not there now
         ids: set[str] = set()
         for folder in folders:
             try:
                 with os.scandir(folder) as entries:
                     names = [entry.name for entry in entries]
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 return None
             ids.update(name[: -len(".jsonl")] for name in names if name.endswith(".jsonl"))
         return ids
@@ -1226,8 +1212,7 @@ class ClaudeAdapter(EncodedFolderAdapter):
                     kind=OrphanKind.STALE_SESSION,
                     paths=paths,
                     reason=(
-                        f"{len(paths)} entry(s) in {label} belong to sessions "
-                        "that no longer exist"
+                        f"{len(paths)} entry(s) in {label} belong to sessions that no longer exist"
                     ),
                     size_bytes=size,
                 )
