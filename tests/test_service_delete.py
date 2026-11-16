@@ -209,3 +209,57 @@ def test_an_orphan_delete_records_what_its_confirmation_refused(
     entry = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
     assert entry["removed"] == [str(quiet)][:left]
     assert entry["skipped"] == {str(fresh): reason}
+
+
+# --- counting the project's other sessions -------------------------------
+
+
+class _UncountableAdapter(_StoreAdapter):
+    """A harness whose store cannot be read, so its sessions cannot be counted.
+
+    Attributes:
+        fail_in: The step that raises: ``"count"``, ``"available"`` or ``"none"``.
+    """
+
+    name = "uncountable"
+    display = "Uncountable"
+
+    def __init__(self, root: Path, fail_in: str) -> None:
+        """Store the root and which step should fail."""
+        super().__init__(root)
+        self.fail_in = fail_in
+
+    def available(self) -> bool:
+        """Report installed, unless this step is the one that fails."""
+        if self.fail_in == "available":
+            raise PermissionError("store unreadable")
+        return True
+
+    def sessions_for_project(self, project, sessions=None):
+        """Find nothing, unless counting is the step that fails."""
+        if self.fail_in == "count":
+            raise PermissionError("store unreadable")
+        return []
+
+
+@pytest.mark.parametrize("fail_in", ["count", "available"])
+def test_a_harness_that_cannot_be_counted_makes_the_count_unknown(
+    store: Path, session_file: Path, tmp_path: Path, fail_in: str
+):
+    """Leaving a failing harness out undercounted, which opened the last-session cleanup.
+
+    The count is unknown instead, which every caller treats as "sessions may
+    remain".
+    """
+    adapters = {"tmp": _StoreAdapter(store), "uncountable": _UncountableAdapter(store, fail_in)}
+    service = DeleteService(adapters, log_path=tmp_path / "ops.log")
+
+    assert service.remaining_sessions(_session(session_file)) is None
+
+
+def test_a_count_every_harness_answers_is_a_number(store: Path, session_file: Path, tmp_path: Path):
+    """With every harness answering, the count is the usual number."""
+    adapters = {"tmp": _StoreAdapter(store), "uncountable": _UncountableAdapter(store, "none")}
+    service = DeleteService(adapters, log_path=tmp_path / "ops.log")
+
+    assert service.remaining_sessions(_session(session_file)) == 0

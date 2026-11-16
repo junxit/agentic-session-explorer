@@ -289,7 +289,7 @@ class DeleteService(_OperationService):
         self,
         session: Session,
         sessions_by_harness: dict[str, list[Session]] | None = None,
-    ) -> int:
+    ) -> int | None:
         """Count the sessions that would still point at this project afterwards.
 
         Counted across **every** harness, because the project-scoped state a
@@ -297,25 +297,31 @@ class DeleteService(_OperationService):
         settings, Gemini's folder-trust entry. A Codex session still pointing at
         the directory means the project is not finished with.
 
+        A harness that fails while being counted makes the count unknown rather
+        than leaving its sessions out: a count that is too low would offer, and
+        then remove, the state of a project still in use.
+
         Args:
             session: The session about to be deleted.
             sessions_by_harness: An already-discovered pool to reuse.
 
         Returns:
-            How many other sessions reference the same project.
+            How many other sessions reference the same project, or ``None`` when
+            a harness could not be counted. Callers must treat ``None`` as
+            "sessions may remain", never as zero.
         """
         if not session.project_path:
             return 0
         project = Path(session.project_path)
         total = 0
         for name, adapter in self._adapters.items():
-            if Capability.BROWSE not in adapter.capabilities or not adapter.available():
-                continue
             pool = sessions_by_harness.get(name) if sessions_by_harness else None
             try:
+                if Capability.BROWSE not in adapter.capabilities or not adapter.available():
+                    continue
                 found = adapter.sessions_for_project(project, pool)
-            except Exception:  # noqa: BLE001, S112 - one harness must not break the count
-                continue
+            except Exception:  # noqa: BLE001 - any failure makes the count unknown
+                return None
             total += sum(
                 1
                 for other in found
@@ -621,7 +627,9 @@ class MoveService(_OperationService):
 
         * the source must be a real directory, and not the home directory, the
           filesystem root, or any directory containing a harness store — moving
-          one of those would drag the session stores along with it;
+          one of those would drag the session stores along with it. A harness
+          that cannot say where its store is refuses the move, since its store
+          may be inside;
         * the destination must not already hold anything, so nothing is merged
           into or overwritten; and
         * the destination must not be inside the source.
@@ -649,8 +657,8 @@ class MoveService(_OperationService):
         for adapter in self._adapters.values():
             try:
                 roots = adapter.store_roots()
-            except Exception:  # noqa: BLE001, S112
-                continue
+            except Exception as exc:  # noqa: BLE001 - a store that cannot be located may be inside
+                return f"cannot tell whether {old} holds {adapter.display}'s session store: {exc}"
             for root in roots:
                 if is_under(str(root), old):
                     return f"refusing to move a directory containing a session store: {root}"

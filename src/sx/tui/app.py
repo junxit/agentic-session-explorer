@@ -818,7 +818,9 @@ class SxApp(App):
 
     # --- delete ----------------------------------------------------------
 
-    def _session_preview_text(self, session: Session, leftovers: dict, remaining: int) -> Text:
+    def _session_preview_text(
+        self, session: Session, leftovers: dict, remaining: int | None
+    ) -> Text:
         """Render the delete preview for a session.
 
         Shows the files that will go, any non-file work (database rows and
@@ -834,7 +836,8 @@ class SxApp(App):
         Args:
             session: The session about to be deleted.
             leftovers: Project-scoped state, per harness.
-            remaining: How many sessions would still reference the project.
+            remaining: How many sessions would still reference the project, or
+                ``None`` when not every harness could be counted.
         """
         service = self._delete_service
         if service is None:
@@ -872,7 +875,13 @@ class SxApp(App):
             text.append("\n\nThis project also has:\n", style="bold")
             for name, plan in leftovers.items():
                 self._append_leftovers(text, name, plan, session)
-            if remaining > 0:
+            if remaining is None:
+                text.append(
+                    "  kept — not every harness could be checked for other sessions "
+                    "in this project\n",
+                    style="yellow",
+                )
+            elif remaining > 0:
                 text.append(
                     f"  kept — {remaining} other session(s) still use this project\n",
                     style="green",
@@ -1118,6 +1127,14 @@ class SxApp(App):
             )
             return
         others = service.remaining_sessions(session)
+        if others is None:
+            self.notify(
+                "Project state kept — not every harness could be checked for other "
+                "sessions in this project.",
+                severity="warning",
+                timeout=10,
+            )
+            return
         if others:
             self.notify(
                 f"Project state kept — {others} other session(s) now use this project.",

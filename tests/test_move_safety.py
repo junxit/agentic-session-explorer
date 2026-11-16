@@ -308,3 +308,49 @@ def test_relocation_moves_the_directory_and_logs_both_endpoints(tmp_path, servic
     entry = json.loads((tmp_path / "op.log").read_text().strip())
     assert entry["action"] == "move_project"
     assert (entry["old"], entry["new"]) == (str(source), str(destination))
+
+
+class _StorelessAdapter(HarnessAdapter):
+    """A harness that cannot say where its store is right now."""
+
+    name = "storeless"
+    display = "Storeless"
+    capabilities = Capability.BROWSE
+
+    def store_roots(self):
+        """Fail, as an unreadable configuration would."""
+        raise PermissionError("cannot read the store's location")
+
+    def available(self):
+        """Report installed."""
+        return True
+
+    def discover(self):
+        """Find nothing."""
+        return iter(())
+
+    def load(self, session):
+        """Load nothing."""
+        return []
+
+
+def test_relocation_refuses_while_a_harness_cannot_name_its_store(tmp_path, monkeypatch):
+    """Skipping that harness let ``--relocate`` move a directory that may hold its store."""
+    monkeypatch.setattr(claude_mod, "home", lambda: tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "fake-home"))
+    claude = ClaudeAdapter()
+    source = tmp_path / "project"
+    source.mkdir()
+    destination = tmp_path / "moved"
+    log = tmp_path / "op.log"
+
+    assert (
+        MoveService({claude.name: claude}, log_path=log).check_relocation(source, destination)
+        is None
+    )
+
+    adapters = {claude.name: claude, "storeless": _StorelessAdapter()}
+    reason = MoveService(adapters, log_path=log).check_relocation(source, destination)
+    assert reason is not None
+    assert "cannot tell" in reason and "Storeless" in reason
+    assert source.is_dir() and not destination.exists()

@@ -140,11 +140,61 @@ class _Careful(_Folder):
     open_session_caveat = "close the session in Fake first"
 
 
-def _wire(app: SxApp, adapter: HarnessAdapter, tmp_path: Path) -> dict[str, Session]:
-    """Inject ``adapter`` in place of the real registry; return its sessions by id."""
-    app._adapters_by_name = {adapter.name: adapter}
+class _Unreadable(HarnessAdapter):
+    """A second harness whose store cannot be read when its sessions are counted.
+
+    Attributes:
+        broken: Whether counting its sessions fails right now.
+    """
+
+    name = "unreadable"
+    display = "Unreadable"
+    capabilities = Capability.BROWSE
+
+    def __init__(self, root: Path, *, broken: bool = True) -> None:
+        """Store the root and whether counting fails."""
+        self._root = root
+        self.broken = broken
+
+    def store_roots(self) -> list[Path]:
+        """The synthetic store."""
+        return [self._root]
+
+    def available(self) -> bool:
+        """Report installed."""
+        return True
+
+    def discover(self):
+        """Find nothing."""
+        return iter(())
+
+    def load(self, session: Session) -> list[Message]:
+        """Load nothing."""
+        return []
+
+    def sessions_for_project(self, project, sessions=None) -> list[Session]:
+        """Find nothing, or fail as an unreadable store would.
+
+        Raises:
+            PermissionError: While :attr:`broken` is set.
+        """
+        if self.broken:
+            raise PermissionError("store unreadable")
+        return []
+
+
+def _wire(
+    app: SxApp, adapter: HarnessAdapter, tmp_path: Path, *others: HarnessAdapter
+) -> dict[str, Session]:
+    """Inject ``adapter`` and any ``others`` in place of the real registry.
+
+    Returns:
+        ``adapter``'s sessions by id.
+    """
+    adapters = (adapter, *others)
+    app._adapters_by_name = {each.name: each for each in adapters}
     app._delete_service = DeleteService(app._adapters_by_name, log_path=tmp_path / "ops.log")
-    app._sessions_by_harness = {adapter.name: list(adapter.discover())}
+    app._sessions_by_harness = {each.name: list(each.discover()) for each in adapters}
     app._load_errors = []
     app._live_cache = {}
     app._populate_tree()
@@ -328,6 +378,48 @@ async def test_project_state_goes_when_it_is_still_left_over(tmp_path, monkeypat
 
         assert len(adapter.cleaned) == 1
         assert not adapter.folder.exists()
+
+
+@pytest.mark.asyncio
+async def test_no_cleanup_is_offered_while_a_harness_cannot_be_counted(tmp_path, monkeypatch):
+    """A harness left out of the count made this look like the project's last session."""
+    adapter = _Folder(tmp_path / "store", "one")
+    app = SxApp()
+    async with app.run_test(size=(160, 45)) as pilot:
+        await pilot.pause()
+        session = _wire(app, adapter, tmp_path, _Unreadable(tmp_path / "other"))["one"]
+        monkeypatch.setattr(app, "_current_session", lambda: session)
+
+        screen = await _open_delete_dialog(app, pilot)
+        preview = screen._preview.plain
+        assert "not every harness could be checked for other sessions" in preview
+        assert "this is the LAST session for this project" not in preview
+        assert len(screen.query("#bundle")) == 0
+
+
+@pytest.mark.asyncio
+async def test_project_state_stays_when_a_harness_cannot_be_counted_again(tmp_path, monkeypatch):
+    """The count is taken again before the state goes, and failing then keeps it too."""
+    adapter = _Folder(tmp_path / "store", "one")
+    other = _Unreadable(tmp_path / "other", broken=False)
+    app = SxApp()
+    async with app.run_test(size=(160, 45)) as pilot:
+        await pilot.pause()
+        session = _wire(app, adapter, tmp_path, other)["one"]
+        monkeypatch.setattr(app, "_current_session", lambda: session)
+        notices = _notices(app)
+
+        screen = await _open_delete_dialog(app, pilot)
+        screen.query_one("#bundle", Checkbox).value = True
+        await pilot.pause()
+        other.broken = True  # its store became unreadable while the dialog was open
+        await pilot.click("#confirm")
+        await _settle(app, pilot)
+
+        assert not session.primary_path.exists()
+        assert adapter.cleaned == []
+        assert adapter.folder.is_dir()
+        assert any(n.startswith("Project state kept — not every harness") for n in notices)
 
 
 # --- the open-session caveat ----------------------------------------------------
