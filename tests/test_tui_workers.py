@@ -166,6 +166,38 @@ async def _gated(pilot, adapter: _Gated) -> None:
     await _until(pilot, adapter.entered.is_set)
 
 
+async def _settled(pilot, screen_type: type, selector: str, *, focused: bool = False) -> None:
+    """Wait until a ``screen_type`` dialog is up and ``selector`` in it is laid out.
+
+    A dialog becomes ``app.screen`` before its widgets are mounted, and they
+    are mounted before they are laid out. Input sent in between goes nowhere:
+    a click aimed at a button whose region is still empty lands on no widget,
+    so the dialog never answers and the worker waiting on it never finishes.
+    Under load that hung the suite (#20). The region must also hold still for
+    one pause, since the delete dialog fits its preview to the screen after
+    its first refresh.
+
+    Args:
+        pilot: The app's pilot.
+        screen_type: The dialog expected on top.
+        selector: The widget input will be sent to.
+        focused: Whether that widget must also have focus, for key presses.
+    """
+    app = pilot.app
+    await _until(pilot, lambda: isinstance(app.screen, screen_type))
+    last = None
+    for _ in range(100):
+        nodes = app.screen.query(selector)
+        node = nodes.first() if nodes else None
+        region = node.region if node is not None else None
+        ready = region is not None and region.area > 0 and region == last
+        if ready and (not focused or app.focused is node):
+            return
+        last = region
+        await pilot.pause()
+    raise AssertionError(f"{selector} on {screen_type.__name__} never settled")
+
+
 @pytest.mark.asyncio
 async def test_a_superseded_load_never_reaches_the_pane(tmp_path):
     """The session opened last owns the pane and ``t``, whichever parse ends last (T9)."""
@@ -207,7 +239,7 @@ async def test_opening_a_session_does_not_cancel_an_export(tmp_path, monkeypatch
             await app.open_session(sessions["fast"]).wait()
         finally:
             adapter.gate.set()
-        await _until(pilot, lambda: isinstance(app.screen, BranchModeScreen))
+        await _settled(pilot, BranchModeScreen, "#modes", focused=True)
 
         await pilot.press("enter")
         await app.workers.wait_for_complete()
@@ -231,9 +263,9 @@ async def test_opening_a_session_does_not_cancel_a_delete(tmp_path, monkeypatch)
             await app.open_session(sessions["fast"]).wait()
         finally:
             adapter.gate.set()
-        await _until(pilot, lambda: isinstance(app.screen, ConfirmDeleteScreen))
+        await _settled(pilot, ConfirmDeleteScreen, "#confirm")
 
-        await pilot.click("#confirm")
+        assert await pilot.click("#confirm"), "the click must land on Delete"
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert not sessions["slow"].primary_path.exists()
