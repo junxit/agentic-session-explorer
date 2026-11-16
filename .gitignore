@@ -31,3 +31,6 @@ htmlcov/
 # sx runtime output
 session-exports/
 sx-deletions.log
+
+# Claude Code: personal settings (a shared .claude/settings.json may be committed)
+.claude/settings.local.json
