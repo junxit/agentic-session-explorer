@@ -212,7 +212,13 @@ def read_first_line(path: Path) -> dict | None:
 
 
 def parse_ts(value: object) -> datetime | None:
-    """Parse an ISO-8601 timestamp into a naive/aware datetime, tolerantly.
+    """Parse an ISO-8601 timestamp into local time, tolerantly.
+
+    Harnesses record their timestamps in UTC (``…Z``), while file times are read
+    in local time (:func:`file_mtime`). A timestamp that carries an offset is
+    therefore converted to the local time zone, so both kinds display on the
+    same clock. It stays timezone-aware and names the same instant. One without
+    an offset is returned as written.
 
     Args:
         value: Typically an ISO string like ``"2026-05-30T00:35:37.638Z"``.
@@ -224,9 +230,16 @@ def parse_ts(value: object) -> datetime | None:
         return None
     text = value.replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return parsed
+    try:
+        return parsed.astimezone()
+    except OverflowError, OSError, ValueError:
+        # Out of the range local time can express: keep the instant as recorded.
+        return parsed
 
 
 def file_mtime(path: Path) -> datetime | None:
