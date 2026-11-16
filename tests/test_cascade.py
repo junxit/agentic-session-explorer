@@ -98,7 +98,7 @@ def test_delete_takes_every_session_keyed_artifact(tmp_path, monkeypatch):
 
 
 def test_delete_removes_only_this_session_s_security_state(tmp_path, monkeypatch):
-    """The id is embedded mid-name; a neighbour's state must survive."""
+    """The id is embedded mid-name; a neighbor's state must survive."""
     adapter = _claude_home(tmp_path, monkeypatch)
     keep = tmp_path / ".claude" / "security" / f"security_warnings_state_{OTHER}.json"
     keep.write_text("{}")

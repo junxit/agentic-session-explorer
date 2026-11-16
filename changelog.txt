@@ -361,7 +361,7 @@ Every artifact a session owns now goes with it
 
 Cascade targets are now constructed from the session id rather than searched
 for by prefix, and a final check refuses any target whose name does not contain
-that id. There is no pattern left that could widen onto a neighbour.
+that id. There is no pattern left that could widen onto a neighbor.
 
 Project memory is never collateral
 - A harness writes memory to outlive the conversation that produced it, so no

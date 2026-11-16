@@ -551,7 +551,7 @@ class ClaudeAdapter(EncodedFolderAdapter):
                     matches.append(entry)
 
         # Constructed, not searched: the path is built from the session id, so
-        # there is no pattern that could widen to a neighbour.
+        # there is no pattern that could widen to a neighbor.
         for sub in _SESSION_DIRS:
             candidate = base / sub / sid
             if candidate.exists():
