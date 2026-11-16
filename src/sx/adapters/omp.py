@@ -40,8 +40,9 @@ its embedded documentation; none was sampled from a real file.
   moving ``S/`` along; omp neither lists nor restores them, and sx never
   deletes anything that belongs to one.
 * **Liveness.** omp holds an ownership lease — an exclusive ``flock`` on
-  ``<run>/session-owners/<id>.lock`` — only while it writes a session; a
-  session it has open but has not written to holds nothing. ``sx`` asks the
+  ``<run>/session-owners/<id>.lock`` — from its first write to a session for
+  as long as it keeps the session open (omp 18.20.2, checked against a real
+  store); a session it has open but has not written to holds nothing. ``sx`` asks the
   kernel whether anyone holds the lease (``F_GETLK``) and never takes it: omp
   tries once, and a session whose lease it cannot get is forked to a new file.
   Every place omp may keep its leases is asked; anything ``sx`` cannot read —

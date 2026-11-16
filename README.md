@@ -63,7 +63,7 @@ want.
 | Gemini CLI | ✅ verified | `~/.gemini/tmp/<hash>/chats/session-*.jsonl` |
 | opencode | ✅ verified | `~/.local/share/opencode/opencode.db` (SQLite) |
 | Pi | 🔬 from source | `~/.pi/agent/sessions/--<path>--/<time>_<id>.jsonl` (or `$PI_CODING_AGENT_DIR`) |
-| Oh My Pi | 🔬 from source | `~/.omp/agent/sessions/<folder>/<time>_<id>.jsonl` (profiles, `$PI_CODING_AGENT_DIR`, XDG) |
+| Oh My Pi | ✅ browse · 🔬 delete, move | `~/.omp/agent/sessions/<folder>/<time>_<id>.jsonl` (profiles, `$PI_CODING_AGENT_DIR`, XDG) |
 | Qwen Code | 🔎 dormant | Gemini-fork layout |
 | Continue | 🔎 dormant | `~/.continue/sessions/*.json` |
 | Goose | 🔎 dormant | `~/.local/share/goose/sessions/` |
@@ -74,6 +74,12 @@ want.
 ✅ verified on a real machine · 🔬 fully supported, built from the harness's
 source code (no real sessions sampled yet) · 🔎 format known · 🧩 needs probing
 once installed
+
+Oh My Pi was checked read-only against a real omp 18.20.2 store. Discovery,
+the file format, transcripts, export, and the open-session check all matched,
+with the session open in omp and again after it closed. Its delete and move are
+built from source; they refuse any file that deviates from the format they
+expect.
 
 ### Relocated Claude installs (`CLAUDE_CONFIG_DIR`)
 
@@ -395,11 +401,13 @@ lists what it would remove, per harness, path by path: Claude's project folder
 MCP servers) and prompt-history rows, but not the project's scratchpad folder,
 which other Claude configs' sessions may share; Gemini's project directories
 and its registry and folder-trust entries; Pi's project folder, once nothing in
-it has been written for 24 hours; Oh My Pi's project folder and memory folder.
-Right before removing any of it, `sx` counts the project's sessions again from
-a fresh scan of every harness, and Pi and Oh My Pi check their folders again.
-If a session has appeared, or the session's transcript was not deleted, the
-project state stays.
+it has been written for 24 hours (Pi's trust decision in its `trust.json` stays:
+`sx` does not edit Pi's configuration); Oh My Pi's project folder and memory
+folder. Right before removing any of it, `sx` counts the project's sessions
+again from a fresh scan of every harness, and Pi and Oh My Pi check their
+folders again. If a session has appeared, or the session's transcript was not
+deleted, the project state stays. A harness that cannot be checked counts as
+still using the project: the checkbox is not offered, and the state stays.
 
 Artifacts `sx` deliberately leaves alone, because the link is too weak to delete
 on: `~/.claude/plans/*.md` (referenced only by filename inside prose),
@@ -532,8 +540,9 @@ A few properties worth knowing:
   by default because those files belong to a harness that may be running.
 - **`--relocate` is guarded.** It refuses a destination that already holds
   anything, a destination inside the source, your home directory, and any
-  directory containing a harness store. A cross-filesystem move is disclosed as
-  the copy-then-delete it really is.
+  directory containing a harness store, or that might, because a harness cannot
+  say where its store is. A cross-filesystem move is disclosed as the
+  copy-then-delete it really is.
 
 ## Architecture
 
@@ -579,10 +588,11 @@ the database file or other sessions. Its shared `log/` files are left alone.
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync --locked --extra dev
 uv run sx list
-uv run pytest
+uv run pytest -W error
 uv run ruff check
+uv run ruff format --check
 ```
 
 A test that runs for 120 seconds is taken for a hang: the run stops with exit
@@ -590,17 +600,30 @@ status 1, naming the test and printing every thread's stack. Set
 `SX_TEST_TIMEOUT` to change the limit, or to `0` to turn the guard off (for a
 debugger session, say).
 
+CI (`.github/workflows/ci.yml`) runs the same checks on every push to `main` or
+a `release/*` branch and on every pull request: lint and format on Ubuntu, and
+the full suite, with warnings as errors, on macOS. The suite does not pass on
+Linux yet, mostly in its Oh My Pi tests ([#17]). CI's tools are pinned exactly,
+like the dependencies: uv, Python, the runner images, and each action by commit
+SHA. Dependabot proposes updates to both.
+
+[#17]: https://github.com/junxit/agentic-session-explorer/issues/17
+
 ### Releasing
 
 The update check compares the installed version against the latest GitHub
-**release** (falling back to the highest `vX.Y.Z` tag). To publish an update:
+**release** (falling back to the highest `vX.Y.Z` tag), so a tag alone prompts
+nobody. To publish an update:
 
-1. Bump `version` in `pyproject.toml` and `__version__` in `src/sx/__init__.py`.
-2. Commit, then tag and release:
+1. Bump `version` in `pyproject.toml` and `__version__` in `src/sx/__init__.py`,
+   run `uv lock`, and add the version's section to `changelog.txt`.
+2. Commit on a `release/X.Y.Z` branch and push it. CI must pass on that commit.
+3. Fast-forward `main` to it and push, so `main` gets the commit CI checked.
+4. Tag it and publish the release:
 
    ```bash
-   git tag v0.2.0 && git push --tags
-   gh release create v0.2.0 --generate-notes
+   git tag -a vX.Y.Z -m "sx X.Y.Z — <topic>" && git push origin vX.Y.Z
+   gh release create vX.Y.Z --verify-tag --title "sx X.Y.Z" --notes-file notes.md --latest
    ```
 
 Installed copies will then prompt their users to upgrade.
@@ -660,12 +683,14 @@ the confirmation you see is the whole truth about what is about to happen:
   socket `sx` cannot check, and on other platforms `sx` does not know the
   lock's layout, so there every Oh My Pi session counts as open: it can be
   browsed and exported, but not deleted or moved. Pi marks nothing about the
-  sessions it has open. Neither harness marks a session that is open but
-  idle, so their delete and move confirmations tell you to close it in the
-  harness first: otherwise Pi's next turn fails, or goes to a file Pi never
-  lists, and Oh My Pi's next write can bring a deleted session back whole,
-  leave a moved one in two places, or leave a header-less file it will not
-  resume.
+  sessions it has open. Oh My Pi takes a session's lease at its first write
+  and keeps it while the session stays open (omp 18.20.2 still held it 20
+  minutes after the last write, and let it go on exit), but a session it has
+  opened without writing to yet holds nothing. So delete and move
+  confirmations for both tell you to close the session in the harness first:
+  otherwise Pi's next turn fails, or goes to a file Pi never lists, and Oh My
+  Pi's next write can bring a deleted session back whole, leave a moved one in
+  two places, or leave a header-less file it will not resume.
 - **Orphans are checked again before they go.** Each one is fingerprinted when
   it is listed (the type, size and modification time of everything under it),
   and at deletion anything that changed since, was written in the last 90
