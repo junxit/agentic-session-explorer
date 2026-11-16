@@ -3048,14 +3048,54 @@ class OmpAdapter(PiFormatAdapter):
             project: Its recorded working directory, if known.
 
         Returns:
-            A refusal reason, or ``None`` when every lease is free.
+            A refusal reason, or ``None`` when every lease is free. When the
+            project's own ``.env`` is why a lease cannot be checked, the reason
+            names it (:meth:`_project_dotenv_reason`).
         """
         states = self._lease_states(ids, project)
         if LEASE_HELD in states:
             return _OPEN
         if not states or any(state != LEASE_FREE for state in states):
-            return _UNSURE
+            return self._project_dotenv_reason(project) or _UNSURE
         return None
+
+    def _project_dotenv_reason(self, project: str | None) -> str | None:
+        """Return why a project's own ``.env`` keeps its leases from being checked.
+
+        An omp started in ``project`` loads ``<project>/.env``, which can move
+        where it keeps its leases. Store-level ``.env`` files get a warning in
+        ``sx harnesses`` (:meth:`store_warnings`); this file affects only the
+        project's own sessions, so their refusal is where it is named.
+
+        Args:
+            project: The session's recorded working directory, if known.
+
+        Returns:
+            A refusal reason naming the file, or ``None`` when it is not a cause.
+        """
+        if not project or not os.path.isabs(project):
+            return None
+        path = Path(project) / ".env"
+        dotenv = self._dotenv(path)
+        if dotenv is None:
+            problem = "cannot be read the way Oh My Pi reads it at startup"
+        elif dotenv.unsure:
+            problem = (
+                f"sets {', '.join(dotenv.unsure)} in a form that Bun's .env parser, which "
+                "Oh My Pi runs on, and Node's read differently"
+            )
+        else:
+            _, relative = _lease_dirs_from(self._store().home, [dotenv.values])
+            if not relative:
+                return None
+            problem = (
+                f"sets {', '.join(sorted(set(relative)))} to a relative path, which Oh My Pi "
+                "resolves against wherever it is started"
+            )
+        return (
+            f"{short_path(path)} {problem}, so sx cannot tell whether Oh My Pi has this "
+            "session open (refused)"
+        )
 
     def _subagent_reason(self, artifacts: Path, project: str | None = None) -> str | None:
         """Return why a session counts as open, judged by its sub-agents.

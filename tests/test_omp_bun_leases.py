@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from sx.adapters.omp import LEASE_FREE, LEASE_HELD, LEASE_UNKNOWN, OmpAdapter
+from sx.util import short_path
 from tests import test_omp_adapter as base
 
 sandbox = base.sandbox
@@ -120,3 +121,46 @@ def test_lines_both_parsers_read_alike_change_nothing(sandbox, old):
     adapter = OmpAdapter()
     assert adapter.lease_state("S1") == LEASE_FREE
     assert adapter.store_warnings() == []
+
+
+@pytest.mark.parametrize(
+    ("text", "problem"),
+    [
+        ("XDG_STATE_HOME: {state}\n", "sets XDG_STATE_HOME in a form that Bun's .env parser"),
+        ("#" * (1024 * 1024 + 1), "cannot be read the way Oh My Pi reads it at startup"),
+        ("XDG_STATE_HOME=relative/state\n", "sets XDG_STATE_HOME to a relative path"),
+    ],
+    ids=["read-differently", "unreadable", "relative"],
+)
+def test_a_session_its_projects_dot_env_keeps_unknown_names_the_file(
+    sandbox, old, tmp_path, text, problem
+):
+    """The refusal names ``<cwd>/.env`` and what is wrong with it, not only "cannot tell".
+
+    Store-level ``.env`` files are named in ``sx harnesses``; a project's own
+    file affects only that project's sessions, so their refusal is where it is
+    named.
+    """
+    (old / ".env").write_text(text.format(state=tmp_path / "state"), encoding="utf-8")
+    path = base._session(old)
+    adapter = OmpAdapter()
+    session = base._only(adapter)
+
+    result = adapter.delete(session)
+
+    assert path.exists()
+    reason = result.refused[path]
+    assert reason.startswith(f"{short_path(old / '.env')} {problem}")
+    assert reason.endswith(", so sx cannot tell whether Oh My Pi has this session open (refused)")
+    assert adapter.lease_state("S1", str(old)) == LEASE_UNKNOWN
+
+
+def test_a_projects_dot_env_that_reads_alike_is_not_blamed(sandbox, old):
+    """An ordinary project ``.env`` neither keeps the session nor appears in a reason."""
+    (old / ".env").write_text("EDITOR=vim\n", encoding="utf-8")
+    path = base._session(old)
+    adapter = OmpAdapter()
+
+    result = adapter.delete(base._only(adapter))
+
+    assert not path.exists() and path not in result.refused
