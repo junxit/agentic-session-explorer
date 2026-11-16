@@ -62,7 +62,7 @@ want.
 | Codex | ✅ verified | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` |
 | Gemini CLI | ✅ verified | `~/.gemini/tmp/<hash>/chats/session-*.jsonl` |
 | opencode | ✅ verified | `~/.local/share/opencode/opencode.db` (SQLite) |
-| Pi | 🔬 from source | `~/.pi/agent/sessions/--<path>--/<time>_<id>.jsonl` (or `$PI_CODING_AGENT_DIR`) |
+| Pi | ✅ browse · 🔬 delete, move | `~/.pi/agent/sessions/--<path>--/<time>_<id>.jsonl` (or `$PI_CODING_AGENT_DIR`) |
 | Oh My Pi | ✅ browse · 🔬 delete, move | `~/.omp/agent/sessions/<folder>/<time>_<id>.jsonl` (profiles, `$PI_CODING_AGENT_DIR`, XDG) |
 | Qwen Code | 🔎 dormant | Gemini-fork layout |
 | Continue | 🔎 dormant | `~/.continue/sessions/*.json` |
@@ -75,11 +75,13 @@ want.
 source code (no real sessions sampled yet) · 🔎 format known · 🧩 needs probing
 once installed
 
-Oh My Pi was checked read-only against a real omp 18.20.2 store. Discovery,
-the file format, transcripts, export, and the open-session check all matched,
-with the session open in omp and again after it closed. Its delete and move are
-built from source; they refuse any file that deviates from the format they
-expect.
+Pi and Oh My Pi were each checked read-only against a real store (Pi 1.5.2,
+omp 18.20.2). Discovery, the file format, transcripts (model changes and failed
+replies included), export, and what a delete would remove all matched. For Oh
+My Pi, so did the open-session check, with the session open in omp and again
+after it closed. Neither sample session had branched, so the branch views are
+checked against the harnesses' source only. Delete and move are built from
+source; they refuse any file that deviates from the format they expect.
 
 ### Relocated Claude installs (`CLAUDE_CONFIG_DIR`)
 
