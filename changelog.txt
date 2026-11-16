@@ -1,6 +1,69 @@
 Changelog
 =========
 
+0.8.1
+-----
+Times recorded inside sessions are now shown in local time, two checks that
+skipped a harness when it failed now treat it as unknown, and the repository
+gains CI.
+
+Fixed
+- Times recorded inside session files are shown in local time. Harnesses
+  record UTC, while file times were already shown in local time, so the two
+  sat side by side on different clocks: in UTC-6 an export read "Created
+  14:12, Modified 08:18" for a session started at 08:12, and message times
+  were off the same way. This fixes message times, created times and export
+  headers for every harness. Nothing that decides what to delete or move used
+  them.
+- A harness that fails while a project's other sessions are being counted no
+  longer counts as having none. The count came out too low, so the delete
+  dialog could offer, and then remove, the state of a project another harness
+  still used. Now no cleanup is offered and the state stays; the dialog, and
+  the re-count after the delete, say why.
+- `--relocate` refuses to move a directory while a harness cannot say where
+  its store is, since the store may be inside it. It used to skip that harness.
+- When an Oh My Pi project's own .env keeps its sessions' leases from being
+  checked, the refusal now names the file and what is wrong with it: sx cannot
+  read it the way Oh My Pi does, Bun's and Node's .env parsers read it
+  differently, or it sets a lease variable to a relative path. It used to say
+  only "cannot tell whether Oh My Pi has this session open". The sessions
+  still count as open.
+
+Oh My Pi, checked on a real machine
+- A read-only check against a real omp 18.20.2 store matched what sx expects:
+  discovery, the 256-byte title line and the version-3 header, every entry
+  type, titles, transcripts and export, and what a delete would remove. With
+  the session open in omp, even 20 minutes after its last write, the lease
+  read as held and a delete or move was refused. After omp exited, the lease
+  read as free. The README now marks Oh My Pi browsing as verified; delete and
+  move are still built from source.
+- The README said neither harness marks a session that is open but idle. Oh
+  My Pi does, once it has written to the session: it keeps the lease while the
+  session stays open. Only a session opened without a write yet is unmarked,
+  so the confirmations still ask you to close the session first.
+
+Project
+- CI: GitHub Actions runs `ruff check` and `ruff format --check` on Ubuntu,
+  and the full test suite with warnings as errors on macOS. It runs on every
+  push to main or a release branch and on every pull request. uv, Python, the
+  runner images and each action, by commit SHA, are pinned exactly, and
+  Dependabot now watches the actions as well as uv.lock.
+- The suite does not pass on Linux yet: a first Ubuntu run failed 141 Oh My
+  Pi tests (sx counts every Oh My Pi session as open there, by design) and
+  then hung in one TUI test. Tracked as issue #17; until then CI tests on
+  macOS only.
+- Known gaps carried over from 0.8.0 are tracked as GitHub issues #8 to #16,
+  each with a handoff prompt for picking it up.
+- The tree is formatted with `ruff format`, which CI now enforces. No behavior
+  changed.
+- README: the Development and Releasing sections describe the checks and the
+  release flow as they are now, and the project-state cleanup notes that Pi's
+  trust.json entry stays.
+
+Testing
+- 1,649 tests pass on macOS with every warning treated as an error, with the
+  local time zone set to UTC, UTC-6 and UTC+5:30.
+
 0.8.0
 -----
 sx now supports Pi and its fork Oh My Pi: their sessions can be browsed,
