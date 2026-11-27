@@ -27,9 +27,14 @@ class DormantAdapter(HarnessAdapter):
     Subclasses set :attr:`name`, :attr:`display`, and :meth:`store_roots`.
     Capabilities stay :attr:`~sx.model.Capability.NONE`, so discovery yields
     nothing, loading returns nothing, and deletion is never offered.
+
+    Attributes:
+        dormant_reason: Why the harness is not supported, shown by
+            ``sx harnesses``; ``None`` (the default) reads "not yet supported".
     """
 
     capabilities = Capability.NONE
+    dormant_reason: str | None = None
 
     def discover(self):
         """Yield nothing; dormant harnesses expose no sessions.
@@ -117,6 +122,24 @@ class CrushAdapter(DormantAdapter):
         return [home() / ".local" / "share" / "crush", home() / ".crush"]
 
 
+class AntigravityIdeAdapter(DormantAdapter):
+    """Google Antigravity's IDE. Its conversations are encrypted; not readable.
+
+    The IDE keeps each conversation as an encrypted ``conversations/<id>.pb``
+    under ``~/.gemini/antigravity-ide`` (``~/.gemini/antigravity`` before it
+    was renamed), so ``sx`` cannot show them. The CLI's conversations are
+    supported by :class:`~sx.adapters.antigravity.AntigravityCliAdapter`.
+    """
+
+    name = "antigravity-ide"
+    display = "Antigravity IDE"
+    dormant_reason = "its conversations are encrypted"
+
+    def store_roots(self) -> list[Path]:
+        """Return the IDE's store locations, current and earlier."""
+        return [home() / ".gemini" / "antigravity-ide", home() / ".gemini" / "antigravity"]
+
+
 DORMANT_ADAPTERS = [
     QwenAdapter,
     ContinueAdapter,
@@ -124,4 +147,5 @@ DORMANT_ADAPTERS = [
     ClineAdapter,
     CursorAdapter,
     CrushAdapter,
+    AntigravityIdeAdapter,
 ]

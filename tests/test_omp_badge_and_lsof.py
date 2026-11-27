@@ -21,6 +21,7 @@ import time
 
 import pytest
 
+from sx import locks as locks_module
 from sx.adapters import omp as omp_module
 from sx.adapters.omp import LEASE_HELD, LEASE_UNKNOWN, OmpAdapter
 from tests import test_omp_adapter as base
@@ -155,7 +156,7 @@ def _run_ps_and_lsof(monkeypatch: pytest.MonkeyPatch, lsof_output: bytes) -> lis
     monkeypatch.setattr(omp_module, "_list_processes", _LIST_PROCESSES)
     monkeypatch.setattr(omp_module, "_list_open_files", _LIST_OPEN_FILES)
     monkeypatch.setattr(omp_module, "_alive", lambda pid: True)
-    monkeypatch.setattr(omp_module.subprocess, "run", run)
+    monkeypatch.setattr(locks_module.subprocess, "run", run)
     return calls
 
 
@@ -197,7 +198,7 @@ def test_a_badge_listing_that_runs_out_of_time_reads_as_open(sandbox, old, monke
         """Stand in for a listing that does not answer in time."""
         raise subprocess.TimeoutExpired(args, kwargs["timeout"])
 
-    monkeypatch.setattr(omp_module.subprocess, "run", hung)
+    monkeypatch.setattr(locks_module.subprocess, "run", hung)
     adapter = OmpAdapter()
     session = base._only(adapter)
 

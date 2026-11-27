@@ -3,7 +3,7 @@
 Every test operates on synthetic data under pytest's ``tmp_path`` fixture. No
 test reads or writes the user's real stores — ``~/.claude`` (and Claude's
 scratchpads under ``/private/tmp/claude-<uid>``), ``~/.codex``, ``~/.gemini``,
-``~/.local/share/opencode``, ``~/.pi`` or ``~/.omp``. Adapters import ``home``
+``~/.local/share/opencode``, ``~/.pi``, ``~/.omp`` or ``~/.gemini/antigravity-cli``. Adapters import ``home``
 into their own module, so a test redirects that name in each adapter module it
 uses; a test that builds the whole registry redirects every one of them, and
 Claude's scratchpad root, first (``test_safety_regressions`` shows how), and
@@ -141,6 +141,19 @@ def _no_real_scratchpads(monkeypatch: pytest.MonkeyPatch, tmp_path_factory) -> N
     root = tmp_path_factory.mktemp("claude-scratch")
     monkeypatch.setattr("sx.util.scratchpad_root", lambda: root)
     monkeypatch.setattr("sx.adapters.claude.scratchpad_root", lambda: root)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_antigravity_store(monkeypatch: pytest.MonkeyPatch, tmp_path_factory) -> None:
+    """Point the Antigravity CLI adapter at an empty sandbox for every test.
+
+    Its store is under ``~/.gemini``, which a test redirects through ``HOME``
+    or the module's own ``home``; this default means a test that does neither
+    reads an empty store rather than the developer's real conversations. A
+    test that sets its own ``home`` simply overrides it.
+    """
+    root = tmp_path_factory.mktemp("antigravity-home")
+    monkeypatch.setattr("sx.adapters.antigravity.home", lambda: root)
 
 
 #: Variables Pi and Oh My Pi read to relocate their stores. ``sx`` follows them

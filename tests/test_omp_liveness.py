@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from sx import locks as locks_module
 from sx.adapters import omp as omp_module
 from sx.adapters.omp import LEASE_FREE, LEASE_HELD, LEASE_UNKNOWN, OmpAdapter
 from tests import test_omp_adapter as base
@@ -120,7 +121,7 @@ class _Rival:
 
 
 class _Watched:
-    """Stand-in for the ``fcntl`` module the omp adapter uses.
+    """Stand-in for the ``fcntl`` module the lease probe (:mod:`sx.locks`) uses.
 
     After every ``flock``, ``lockf`` or ``fcntl`` call the probe makes — while
     the probe still holds whatever it took — the rival tries to take the
@@ -175,7 +176,7 @@ def test_the_probe_never_makes_a_holders_acquire_fail(lease, monkeypatch):
     """omp claims in one attempt; a probe that held the lease even briefly would fork the session."""
     rival = _Rival(lease)
     calls: list = []
-    monkeypatch.setattr(omp_module, "fcntl", _Watched(fcntl, rival, calls))
+    monkeypatch.setattr(locks_module, "fcntl", _Watched(fcntl, rival, calls))
     try:
         assert OmpAdapter().lease_state("S1") == LEASE_FREE
     finally:
@@ -188,7 +189,7 @@ def test_the_probe_only_asks_with_f_getlk(lease, monkeypatch):
     """No ``flock`` and no ``lockf``: a single non-acquiring query."""
     rival = _Rival(lease)
     calls: list = []
-    monkeypatch.setattr(omp_module, "fcntl", _Watched(fcntl, rival, calls))
+    monkeypatch.setattr(locks_module, "fcntl", _Watched(fcntl, rival, calls))
     try:
         OmpAdapter().lease_state("S1")
     finally:

@@ -256,11 +256,13 @@ def cmd_harnesses(args: argparse.Namespace) -> int:
     _print_load_errors(errors)
 
     print("Known harnesses:\n")
+    width = max([14, *(len(adapter.display) for adapter in adapters)])
     for adapter in adapters:
         installed = adapter.available()
         browsable = Capability.BROWSE in adapter.capabilities
         if not browsable:
-            status = "dormant (not yet supported)"
+            # ``dormant_reason`` is optional on adapters, like ``open_session_caveat``.
+            status = f"dormant ({getattr(adapter, 'dormant_reason', None) or 'not yet supported'})"
         elif installed:
             status = "ready"
         elif owner := _store_owner(adapter):
@@ -268,7 +270,7 @@ def cmd_harnesses(args: argparse.Namespace) -> int:
         else:
             status = "not installed"
         mark = "✓" if (installed and browsable) else ("○" if installed else "·")
-        print(f"  {mark} {adapter.display:<14} {status}")
+        print(f"  {mark} {adapter.display:<{width}} {status}")
 
     override = claude_config_override()
     if override is not None:
