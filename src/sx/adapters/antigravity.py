@@ -62,7 +62,7 @@ from ..model import (
 )
 from ..protowire import LEN, ProtoError, parse, timestamp
 from ..protowire import Message as Proto
-from ..util import DROP, dir_size, home, rewrite_jsonl, write_text_atomic
+from ..util import DROP, dir_size, home, is_under, rewrite_jsonl, write_text_atomic
 from .base import HarnessAdapter
 
 #: The value of ``app_data_dir`` on the CLI's own rows in the shared index.
@@ -751,6 +751,37 @@ class AntigravityCliAdapter(HarnessAdapter):
             },
         )
 
+    def sessions_for_project(
+        self,
+        project: Path,
+        sessions: list[Session] | None = None,
+    ) -> list[Session]:
+        """Return the conversations with any workspace folder in ``project``.
+
+        A conversation can span several folders; it is listed under the
+        first, but a move of any of them, or the count of what still uses a
+        project before its settings are offered for removal, must see it.
+
+        Args:
+            project: The project directory to select for.
+            sessions: An already-discovered pool to filter; when omitted the
+                adapter discovers its own.
+
+        Returns:
+            The matching sessions.
+        """
+        pool = list(self.discover()) if sessions is None else sessions
+        found = []
+        for session in pool:
+            if session.harness != self.name:
+                continue
+            folders = session.extra.get("workspaces") or (
+                [session.project_path] if session.project_path else []
+            )
+            if any(is_under(folder, project) for folder in folders):
+                found.append(session)
+        return found
+
     # --- loading ---------------------------------------------------------
 
     def load(self, session: Session) -> list[Message]:
@@ -820,6 +851,24 @@ class AntigravityCliAdapter(HarnessAdapter):
     def _open_elsewhere(self, ids: list[str]) -> str | None:
         """Return why one of ``ids`` is open in a running Antigravity process, if one is.
 
+        Args:
+            ids: Conversation ids.
+
+        Returns:
+            A refusal reason, or ``None`` when no process has any of them open
+            (:meth:`_open_ids`).
+        """
+        found, blind = self._open_ids(ids)
+        if blind is not None:
+            return blind
+        for cid in ids:
+            if cid in found:
+                return f"Antigravity process {found[cid]} has conversation {cid} open (refused)"
+        return None
+
+    def _open_ids(self, ids: list[str]) -> tuple[dict[str, int], str | None]:
+        """Find which of ``ids`` a running Antigravity process has open, in one scan.
+
         Antigravity's processes (the CLI, ``agy acp``, the desktop app and the
         remote-control daemon) are found with ``ps`` and their open files
         listed with ``lsof``; a conversation counts as open when any of them
@@ -829,20 +878,24 @@ class AntigravityCliAdapter(HarnessAdapter):
             ids: Conversation ids.
 
         Returns:
-            A refusal reason, or ``None`` when no process has any of them open.
+            ``(open, blind)``: each open conversation's id -> the process that
+            has it open, and a refusal reason when the processes or their open
+            files cannot be seen — then any of ``ids`` may be open.
         """
         processes = locks.list_processes(timeout=_SCAN_TIMEOUT_SECONDS)
         if processes is None:
-            return (
+            return {}, (
                 "cannot list the running processes to check this conversation is closed (refused)"
             )
         me, uid = os.getpid(), os.getuid()
         pids = [p for p, u, cmd in processes if u == uid and p != me and _runs_antigravity(cmd)]
         if not pids:
-            return None
+            return {}, None
         files = locks.list_open_files(pids, timeout=_SCAN_TIMEOUT_SECONDS)
         if files is None:
-            return "cannot list Antigravity's open files to check this conversation is closed (refused)"
+            return {}, (
+                "cannot list Antigravity's open files to check this conversation is closed (refused)"
+            )
         store = os.path.realpath(self._store())
         prefixes = {
             cid: (
@@ -852,20 +905,21 @@ class AntigravityCliAdapter(HarnessAdapter):
             )
             for cid in ids
         }
+        found: dict[str, int] = {}
         for pid in pids:
             names = files.get(pid)
             if names is None:
                 if _alive(pid):
-                    return (
+                    return found, (
                         f"cannot see what Antigravity process {pid} has open, so cannot tell "
                         "whether it uses this conversation (refused)"
                     )
                 continue
             for name in names:
                 for cid, wanted in prefixes.items():
-                    if name.startswith(wanted):
-                        return f"Antigravity process {pid} has conversation {cid} open (refused)"
-        return None
+                    if cid not in found and name.startswith(wanted):
+                        found[cid] = pid
+        return found, None
 
     # --- the checks a delete makes first -----------------------------------
 
@@ -1010,10 +1064,12 @@ class AntigravityCliAdapter(HarnessAdapter):
     def _family(self, cid: str, index: _Index) -> list[str]:
         """Return the subagent conversations ``cid`` launched, deepest first, then ``cid``.
 
-        Subagents are found two ways: an index row naming ``cid`` as its
-        parent, and the conversation ids recorded in ``cid``'s own
-        subagent-launch steps. Forks are separate conversations and are never
-        included. Only conversations with a database in the store count.
+        A subagent is a conversation the shared index lists with ``cid`` as
+        its parent, and so on down. The ids in ``cid``'s own launch steps are
+        not followed: a fork starts as a copy of the original's steps, launch
+        steps included, and the subagents those name belong to the original.
+        Forks themselves are separate conversations and never included. Only
+        conversations with a database in the store count.
 
         Args:
             cid: A valid conversation id.
@@ -1031,8 +1087,7 @@ class AntigravityCliAdapter(HarnessAdapter):
         seen = {cid}
 
         def visit(member: str) -> None:
-            kids = kids_of.get(member, set()) | self._launched(member)
-            for kid in sorted(kids):
+            for kid in sorted(kids_of.get(member, set())):
                 if kid in seen or len(seen) >= _MAX_FAMILY:
                     continue
                 if not valid_id(kid) or not os.path.lexists(self._db(kid)):
@@ -1068,6 +1123,34 @@ class AntigravityCliAdapter(HarnessAdapter):
                 found.update(c for c in result.texts(1) if valid_id(c))
         found.discard(cid)
         return found
+
+    def _unclaimed_launches(self, family: list[str], index: _Index) -> list[str]:
+        """Return conversations the family launched that the index does not tie to it.
+
+        A launch step names a conversation the index lists with no parent, or
+        does not list at all: possibly one of the family's subagents, but not
+        one ``sx`` can tell from a copy a fork carries, so it stays, and the
+        preview says so. One the index ties to another conversation is that
+        conversation's and is not mentioned.
+
+        Args:
+            family: The conversations being deleted.
+            index: The shared index, as read for this delete.
+
+        Returns:
+            The ids, sorted.
+        """
+        members = set(family)
+        found: set[str] = set()
+        for member in family:
+            for kid in self._launched(member):
+                summary = index.rows.get(kid)
+                if kid in members or (summary is not None and summary.parent):
+                    continue
+                if kid in index.foreign or not os.path.lexists(self._db(kid)):
+                    continue
+                found.add(kid)
+        return sorted(found)
 
     def _forks_of(self, cid: str, index: _Index) -> list[str]:
         """Return the conversations forked from ``cid`` that are still in the store."""
@@ -1123,12 +1206,34 @@ class AntigravityCliAdapter(HarnessAdapter):
             return DeleteResult(dry_run=dry_run, skipped={target: "does not exist"})
         result = DeleteResult(dry_run=dry_run)
         gone: list[str] = []
+
+        def keep_from(position: int, paths: list[Path], why: str) -> None:
+            """Record that this conversation's other files, and every later one's, stay."""
+            rest = list(paths)
+            for later in family[position + 1 :]:
+                rest.extend(self._conversation_paths(later))
+            for path in rest:
+                result.skipped.setdefault(path, why)
+
         for position, member in enumerate(family):
             paths = self._conversation_paths(member)
+            first = [p for p in paths if p == self._db(member)]
+            # Asked again right before the database goes: a CLI that opened
+            # the conversation since the checks above would go on writing to a
+            # file that is gone.
+            state = locks.FREE if dry_run else self._presence(member)
+            if state not in (locks.FREE, locks.ABSENT):
+                why = (
+                    f"not deleted: Antigravity opened conversation {member} while it was "
+                    "being deleted (refused)"
+                )
+                for path in paths:
+                    result.skipped.setdefault(path, why)
+                keep_from(position, [], why)
+                break
             # The database first, on its own: a conversation whose database
             # will not go keeps everything, and so does every conversation
             # after it — the one that launched it among them.
-            first = [p for p in paths if p == self._db(member)]
             part = self._delete_paths(first, dry_run=dry_run)
             _merge(result, part)
             if part.refused:
@@ -1136,11 +1241,7 @@ class AntigravityCliAdapter(HarnessAdapter):
                     f"not deleted: {first[0].name} could not be removed, and a conversation "
                     "goes only after the subagent conversations it launched (refused)"
                 )
-                rest = [p for p in paths if p not in first]
-                for later in family[position + 1 :]:
-                    rest.extend(self._conversation_paths(later))
-                for path in rest:
-                    result.skipped.setdefault(path, why)
+                keep_from(position, [p for p in paths if p not in first], why)
                 break
             # Gone as far as Antigravity is concerned: a file that will not go
             # now is reported as refused, and the index forgets it either way.
@@ -1148,39 +1249,66 @@ class AntigravityCliAdapter(HarnessAdapter):
                 result, self._delete_paths([p for p in paths if p not in first], dry_run=dry_run)
             )
             gone.append(member)
-        notes = self._forget(gone, dry_run=dry_run, result=result)
+        notes = self._forget(gone, dry_run=dry_run, result=result, index=index)
         forks = self._forks_of(cid, index)
         if forks:
             notes.append(
                 f"{len(forks)} conversation(s) forked from this one stay, but lose what they "
                 "still used from its artifacts folder"
             )
-        if len(family) > 1:
+        unclaimed = self._unclaimed_launches(family, index)
+        if unclaimed:
+            notes.append(
+                f"{len(unclaimed)} conversation(s) it launched stay: Antigravity's index does "
+                "not list them as its subagents"
+            )
+        subagents = [member for member in gone if member != cid]
+        if subagents:
             verb = "would delete" if dry_run else "deleted"
-            notes.insert(0, f"{verb} {len(family) - 1} subagent conversation(s) with it")
+            notes.insert(0, f"{verb} {len(subagents)} subagent conversation(s) with it")
         result.note = " · ".join(notes) or None
         return result
 
-    def _forget(self, ids: list[str], *, dry_run: bool, result: DeleteResult) -> list[str]:
+    def _forget(
+        self,
+        ids: list[str],
+        *,
+        dry_run: bool,
+        result: DeleteResult,
+        index: _Index | None = None,
+    ) -> list[str]:
         """Remove ``ids`` from the shared index, the prompt history and the caches.
+
+        An id whose index row another Antigravity app owns — an IDE
+        conversation the CLI imported keeps the IDE's row — keeps every index
+        row and cache entry of that app; the CLI's own prompt history still
+        forgets it.
 
         Args:
             ids: Conversations whose files are gone (or would be, in a dry run).
             dry_run: If True, count what would change and write nothing.
             result: Where to record an edit that could not be made.
+            index: The shared index as read for this delete; read afresh when
+                omitted.
 
         Returns:
             Human-readable notes on what changed.
         """
         if not ids:
             return []
+        if index is None:
+            index = self._read_index()
         verb = "would remove" if dry_run else "removed"
         notes = []
-        rows, error = self._drop_index_rows(ids, dry_run=dry_run)
-        if error is not None:
-            result.skipped[self._index_path()] = error
-        elif rows:
-            notes.append(f"{verb} {rows} index row(s)")
+        own = [cid for cid in ids if cid not in index.foreign]
+        if not index.readable:
+            result.skipped[self._index_path()] = "cannot read conversation_summaries.db (refused)"
+        elif own:
+            rows, error = self._drop_index_rows(own, dry_run=dry_run)
+            if error is not None:
+                result.skipped[self._index_path()] = error
+            elif rows:
+                notes.append(f"{verb} {rows} index row(s)")
         wanted = set(ids)
         history = self._history_path()
         if history.is_file():
@@ -1242,7 +1370,8 @@ class AntigravityCliAdapter(HarnessAdapter):
                 con.close()
         con = None
         try:
-            con = sqlite3.connect(str(path), timeout=5.0)
+            # mode=rw: an index that vanished since it was checked is not re-created.
+            con = sqlite3.connect(f"{path.as_uri()}?mode=rw", uri=True, timeout=5.0)
             con.execute("PRAGMA busy_timeout=3000")
             con.execute("BEGIN IMMEDIATE")
             total = 0
@@ -1272,11 +1401,16 @@ class AntigravityCliAdapter(HarnessAdapter):
         metadata = cache / "conversation_metadata.json"
         last = cache / "last_conversations.json"
 
+        def owned(entry: object) -> bool:
+            summary = entry.get("summary") if isinstance(entry, dict) else None
+            app = summary.get("AppDataDir") if isinstance(summary, dict) else None
+            return app in (None, "", APP_DATA_DIR)
+
         def drop_metadata(data: object) -> int:
             conversations = data.get("conversations") if isinstance(data, dict) else None
             if not isinstance(conversations, dict):
                 return 0
-            hits = [key for key in conversations if key in ids]
+            hits = [key for key, entry in conversations.items() if key in ids and owned(entry)]
             for key in hits:
                 del conversations[key]
             return len(hits)
@@ -1388,10 +1522,10 @@ class AntigravityCliAdapter(HarnessAdapter):
                 )
         if not candidates:
             return []
-        if self._open_elsewhere([cid for cid, *_ in candidates]) is not None:
-            # Something has one of them open, or the processes cannot be seen:
-            # judge them one by one, and skip any that cannot be cleared.
-            candidates = [c for c in candidates if self._open_elsewhere([c[0]]) is None]
+        busy, blind = self._open_ids([cid for cid, *_ in candidates])
+        if blind is not None:
+            return []  # any of them may be open: none is offered
+        candidates = [c for c in candidates if c[0] not in busy]
         for cid, kind, reason in candidates:
             if self._presence(cid) not in (locks.FREE, locks.ABSENT):
                 continue
@@ -1877,7 +2011,9 @@ def _write_bytes_atomic(path: Path, data: bytes, *, expect: os.stat_result) -> s
     tmp = path.with_name(f".sx-{path.name}.{os.getpid()}.{time.monotonic_ns()}")
     try:
         mode = stat.S_IMODE(expect.st_mode)
-        with open(tmp, "xb") as out:
+        # Owner-only until it takes the original's mode: the copy holds the same data.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+        with os.fdopen(fd, "wb") as out:
             out.write(data)
         os.chmod(tmp, mode)
         after = os.lstat(path)

@@ -178,7 +178,7 @@ def test_a_dry_run_changes_nothing_and_says_what_would_go(store, project):
 
 
 def test_subagents_go_first_and_the_parent_last(store):
-    """The parent's family: an index child and a child named in a launch step; never a fork."""
+    """The family is what the index lists as subagents, down the tree; never a fork."""
     agy.conversation(store, A, [agy.user("go"), agy.launch("worker", "do it", B)])
     agy.conversation(store, B, [agy.user("do it")])
     agy.conversation(store, C, [agy.user("sub of sub")])
@@ -188,6 +188,7 @@ def test_subagents_go_first_and_the_parent_last(store):
         store,
         [
             {"conversation_id": A},
+            {"conversation_id": B, "parent_conversation_id": A, "nesting_depth": 1},
             {"conversation_id": C, "parent_conversation_id": B, "nesting_depth": 2},
             {"conversation_id": fork, "raw_summary": agy.summary_blob(fork_parent=A)},
         ],
@@ -480,3 +481,207 @@ def test_stale_files_are_not_offered_when_their_conversation_cannot_be_ruled_out
     (store / "conversation_summaries.db").write_bytes(b"not a database" * 100)
     _aged(*store.rglob("*"))
     assert AntigravityCliAdapter().find_orphans() == []
+
+
+# --- review regressions ---------------------------------------------------------------
+
+
+def test_deleting_a_fork_keeps_the_originals_subagents(store):
+    """A fork carries a copy of the original's launch steps; the subagents they name stay."""
+    launch = agy.launch("worker", "do it", B)
+    agy.conversation(store, A, [agy.user("go"), launch])
+    agy.conversation(store, B, [agy.user("do it")])
+    agy.conversation(store, C, [agy.user("go"), launch, agy.user("only the fork has this")])
+    agy.index(
+        store,
+        [
+            {"conversation_id": A},
+            {"conversation_id": B, "parent_conversation_id": A, "nesting_depth": 1},
+            {"conversation_id": C, "raw_summary": agy.summary_blob(fork_parent=A)},
+        ],
+    )
+    adapter = AntigravityCliAdapter()
+    result = adapter.delete(_session(adapter, C))
+    assert not (store / "conversations" / f"{C}.db").exists()
+    assert (store / "conversations" / f"{A}.db").exists()
+    assert (store / "conversations" / f"{B}.db").exists() and (store / "brain" / B).exists()
+    assert "subagent" not in (result.note or "")
+
+
+def test_a_launch_the_index_does_not_confirm_is_kept_and_named(store):
+    """A launched conversation with no parent in the index stays; the preview says so."""
+    agy.conversation(store, A, [agy.user("go"), agy.launch("worker", "do it", B)])
+    agy.conversation(store, B, [agy.user("do it")])
+    agy.index(store, [{"conversation_id": A}])
+    adapter = AntigravityCliAdapter()
+    preview = adapter.delete(_session(adapter, A), dry_run=True)
+    assert "1 conversation(s) it launched stay" in preview.note
+    adapter.delete(_session(adapter, A))
+    assert (store / "conversations" / f"{B}.db").exists()
+
+
+def _stuck(monkeypatch, path: Path) -> None:
+    """Make unlinking ``path`` fail, as a busy file on another platform would."""
+    real_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("busy")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+
+def test_a_subagent_that_did_not_go_is_not_reported_deleted(store, monkeypatch):
+    """Nothing removed means no "deleted N subagents" note, and the delete counts as failed."""
+    agy.conversation(store, A, [agy.user("go")])
+    agy.conversation(store, B, [agy.user("do it")])
+    agy.index(store, [{"conversation_id": A}, {"conversation_id": B, "parent_conversation_id": A}])
+    adapter = AntigravityCliAdapter()
+    session = _session(adapter, A)
+    _stuck(monkeypatch, store / "conversations" / f"{B}.db")
+    result = adapter.delete(session)
+    assert result.removed == [] and result.note is None and result.failed
+
+
+def test_a_partial_delete_counts_only_the_subagents_that_went(store, monkeypatch):
+    """Of two subagents, the one whose database will not go is not counted."""
+    agy.conversation(store, A, [agy.user("go")])
+    agy.conversation(store, B, [agy.user("x")])
+    agy.conversation(store, C, [agy.user("y")])
+    agy.index(
+        store,
+        [
+            {"conversation_id": A},
+            {"conversation_id": B, "parent_conversation_id": A},
+            {"conversation_id": C, "parent_conversation_id": A},
+        ],
+    )
+    adapter = AntigravityCliAdapter()
+    session = _session(adapter, A)
+    _stuck(monkeypatch, store / "conversations" / f"{C}.db")
+    result = adapter.delete(session)
+    assert not (store / "conversations" / f"{B}.db").exists()
+    assert (store / "conversations" / f"{C}.db").exists()
+    assert (store / "conversations" / f"{A}.db").exists()
+    assert result.note.startswith("deleted 1 subagent conversation(s) with it")
+
+
+def test_another_apps_search_rows_and_parent_link_are_kept(store):
+    """The CLI's copy of an IDE conversation goes; every index row of the IDE's id stays."""
+    agy.conversation(store, IDE, [agy.user("imported")])
+    agy.index(
+        store,
+        [{"conversation_id": IDE, "app_data_dir": "antigravity"}],
+        fts=[(IDE, "ide text")],
+        parents=[(IDE, A)],
+    )
+    (store / "cache" / "conversation_metadata.json").write_text(
+        agy.go_json(
+            {"conversations": {IDE: {"summary": {"ID": IDE, "AppDataDir": "antigravity"}}}},
+            newline=False,
+        ),
+        encoding="utf-8",
+    )
+    adapter = AntigravityCliAdapter()
+    result = adapter.delete(_session(adapter, IDE))
+    assert store / "conversations" / f"{IDE}.db" in result.removed
+    index = store / "conversation_summaries.db"
+    assert agy.rows_of(index, "SELECT COUNT(*) FROM conversations_fts") == [(1,)]
+    assert agy.rows_of(index, "SELECT COUNT(*) FROM conversation_parents") == [(1,)]
+    assert IDE in (store / "cache" / "conversation_metadata.json").read_text()
+
+
+def test_a_conversation_opened_while_it_is_deleted_keeps_its_database(store, monkeypatch):
+    """The presence lock is asked again right before each database goes."""
+    agy.conversation(store, A, [agy.user("go")])
+    agy.conversation(store, B, [agy.user("x")])
+    agy.index(store, [{"conversation_id": A}, {"conversation_id": B, "parent_conversation_id": A}])
+    adapter = AntigravityCliAdapter()
+    session = _session(adapter, A)
+    asked: list[str] = []
+    real = AntigravityCliAdapter._presence
+
+    def presence(self, cid):
+        asked.append(cid)
+        # Free while the delete checks, held from the moment it starts removing A.
+        return locks.HELD if asked.count(A) >= 2 else real(self, cid)
+
+    monkeypatch.setattr(AntigravityCliAdapter, "_presence", presence)
+    result = adapter.delete(session)
+    assert not (store / "conversations" / f"{B}.db").exists()
+    assert (store / "conversations" / f"{A}.db").exists() and (store / "brain" / A).exists()
+    assert "opened conversation" in result.skipped[store / "conversations" / f"{A}.db"]
+
+
+def test_the_orphan_scan_lists_processes_once(store, monkeypatch):
+    """One open candidate does not make every other candidate scan again."""
+    ids = [f"e0e0e0e0-0000-4000-8000-{n:012d}" for n in range(12)]
+    for cid in ids:
+        agy.conversation(store, cid, [])
+    _aged(*store.rglob("*"))
+    calls = {"ps": 0, "lsof": 0}
+    real = os.path.realpath(store)
+
+    def ps(**kw):
+        calls["ps"] += 1
+        return [(424242, os.getuid(), "/opt/homebrew/Caskroom/antigravity-cli/1/antigravity")]
+
+    def lsof(pids, **kw):
+        calls["lsof"] += 1
+        return {424242: [f"{real}/conversations/{ids[0]}.db"]}
+
+    monkeypatch.setattr(locks, "list_processes", ps)
+    monkeypatch.setattr(locks, "list_open_files", lsof)
+    orphans = AntigravityCliAdapter().find_orphans()
+    assert calls == {"ps": 1, "lsof": 1}
+    assert len(orphans) == len(ids) - 1
+
+
+def test_a_conversation_is_found_by_any_of_its_workspaces(store, tmp_path):
+    """A move of a second workspace, or the last-session count, sees the conversation."""
+    first, second = tmp_path / "one", tmp_path / "two"
+    first.mkdir()
+    second.mkdir()
+    agy.conversation(store, A, [agy.user("go")])
+    agy.index(
+        store, [{"conversation_id": A, "workspace_uris": agy.workspaces(str(first), str(second))}]
+    )
+    adapter = AntigravityCliAdapter()
+    assert [s.session_id for s in adapter.sessions_for_project(second)] == [A]
+    plans = MoveService({"antigravity": adapter}, log_path=tmp_path / "ops.log").plan(
+        second, tmp_path / "moved"
+    )
+    assert [s.session_id for s in plans["antigravity"].sessions] == [A]
+
+
+def test_rewritten_files_keep_their_owner_only_mode(store, project, monkeypatch):
+    """The jetbox cache is owner-only, and so is the copy sx writes, from its creation."""
+    _populated(store, project)
+    jetbox = store / "jetbox_summaries_proto.pb"
+    os.chmod(jetbox, 0o600)
+    seen: list[int] = []
+    real_chmod = os.chmod
+
+    def chmod(path, mode, *args, **kwargs):
+        if Path(path).name.startswith(".sx-jetbox"):
+            seen.append(os.stat(path).st_mode & 0o777)  # as created, before the chmod
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(agy_module.os, "chmod", chmod)
+    adapter = AntigravityCliAdapter()
+    adapter.delete(_session(adapter, A))
+    assert seen == [0o600]
+    assert jetbox.stat().st_mode & 0o777 == 0o600
+
+
+def test_an_index_that_vanished_is_not_re_created(store, project, monkeypatch):
+    """The index is opened read-write only if it is there: never made anew, empty."""
+    _populated(store, project)
+    adapter = AntigravityCliAdapter()
+    index = store / "conversation_summaries.db"
+    index.unlink()
+    monkeypatch.setattr(agy_module.os.path, "lexists", lambda path: True)
+    rows, error = adapter._drop_index_rows([A], dry_run=False)
+    assert rows == 0 and error is not None
+    assert not index.exists()

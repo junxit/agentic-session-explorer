@@ -411,10 +411,13 @@ stayed.
 
 An Antigravity CLI conversation also takes what `agy`'s own delete removes: its
 database and write-ahead log, its artifacts folder, its title and its presence
-lock, and with them every subagent conversation it launched. Subagents go
-first, and the conversation that launched them last. The delete stops at the
-first database it cannot remove, so a conversation never outlives the subagents
-it lists. Then the shared files forget them: their rows in
+lock, and with them every subagent conversation `agy`'s index lists as its own.
+A conversation that one of its launch steps names but the index does not tie to
+it stays, and the preview says so: a fork starts as a copy of the original's
+steps, and the subagents those name are the original's. Subagents go first, and
+the conversation that launched them last. Each presence lock is checked again
+right before its database goes, and the delete stops at the first database it
+cannot remove, so a conversation never outlives the subagents it lists. Then the shared files forget them: their rows in
 `conversation_summaries.db` (the summary, the search index that holds the
 conversation's text, and the parent link), in one transaction; their
 prompt-history rows; and their entries in the CLI's caches, written back the
