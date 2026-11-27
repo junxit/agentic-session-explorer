@@ -2,21 +2,24 @@
 
 A terminal TUI that gathers the chat sessions every AI coding harness leaves on
 your machine — **Claude Code**, **Codex**, **Gemini CLI**, **Pi**, **Oh My Pi**,
-and more — into one browsable, groupable, *deletable* view. Think of it as a
-terminal-native alternative to Claude Code UI, covering every harness at once.
+the **Antigravity CLI**, and more — into one browsable, groupable, *deletable*
+view. Think of it as a terminal-native alternative to Claude Code UI, covering
+every harness at once.
 
 > **Status:** functional. Browsing, search, grouping, moving a project to a new
 > directory, permanent deletion with Markdown export, and orphan cleanup all work
-> across Claude, Codex, Gemini, opencode, Pi, and Oh My Pi.
+> across Claude, Codex, Gemini, opencode, Pi, and Oh My Pi. The Antigravity CLI
+> supports all of them except moving a project.
 
 ## Why
 
 Each harness scatters sessions in its own format and location: Claude under
 `~/.claude/projects/<encoded-cwd>/`, Codex in a date tree under
 `~/.codex/sessions/`, Gemini as mutation logs under `~/.gemini/tmp/<hash>/`,
-opencode as rows in a shared SQLite database, and Pi and Oh My Pi as branching
-session trees under `~/.pi/agent/sessions/` and `~/.omp/agent/sessions/`. Over
-time these pile up alongside
+opencode as rows in a shared SQLite database, Pi and Oh My Pi as branching
+session trees under `~/.pi/agent/sessions/` and `~/.omp/agent/sessions/`, and
+the Antigravity CLI as one SQLite database per conversation under
+`~/.gemini/antigravity-cli/`. Over time these pile up alongside
 orphaned folders pointing at projects you deleted long ago. `sx` reads them all,
 lets you scroll any transcript, and permanently removes the ones you no longer
 want.
@@ -37,8 +40,8 @@ want.
   [Moving a project](#moving-a-project).
 - **A delete that finishes the job** — a Claude session takes every artifact
   Claude wrote for it: sidecars, task and environment state, security state,
-  scratchpads and prompt-history rows. A Pi or Oh My Pi session takes what that
-  harness's own delete removes.
+  scratchpads and prompt-history rows. A Pi, Oh My Pi or Antigravity CLI
+  session takes what that harness's own delete removes.
 - **Project memory browser** — read, archive and remove the notes Claude Code
   keeps *between* sessions, which no session delete will ever touch.
 - **Orphan detection** — finds session folders whose project is definitely
@@ -70,10 +73,12 @@ want.
 | Cline | 🧩 dormant | `~/.cline/data/workspaces/<id>/` |
 | Cursor | 🧩 dormant | `~/.cursor/` (SQLite) |
 | Crush | 🧩 dormant | SQLite |
+| Antigravity CLI | ✅ browse · 🔬 delete | `~/.gemini/antigravity-cli/conversations/<id>.db` (SQLite, one per conversation) |
+| Antigravity IDE | 🔒 dormant | `~/.gemini/antigravity-ide/conversations/<id>.pb` (encrypted) |
 
 ✅ verified on a real machine · 🔬 fully supported, built from the harness's
 source code (no real sessions sampled yet) · 🔎 format known · 🧩 needs probing
-once installed
+once installed · 🔒 stored encrypted; listed, not readable
 
 Pi and Oh My Pi were each checked read-only against a real store (Pi 1.5.2,
 omp 18.20.2). Discovery, the file format, transcripts (model changes and failed
@@ -82,6 +87,11 @@ My Pi, so did the open-session check, with the session open in omp and again
 after it closed. Neither sample session had branched, so the branch views are
 checked against the harnesses' source only. Delete and move are built from
 source; they refuse any file that deviates from the format they expect.
+
+The Antigravity CLI was checked read-only against a real store (agy 1.5.18),
+with a conversation open in it. Discovery, the transcript, the open-conversation
+check and what a delete would remove matched; see
+[Antigravity CLI](#antigravity-cli) for what delete does and refuses.
 
 ### Relocated Claude installs (`CLAUDE_CONFIG_DIR`)
 
@@ -203,6 +213,44 @@ of them does:
 sx harnesses      # where each store was found, plus any warnings
 ```
 
+### Antigravity CLI
+
+Google's Antigravity CLI (`agy`) keeps everything under
+`~/.gemini/antigravity-cli/`; nothing moves it. Each conversation is its own
+SQLite database in `conversations/`, whose steps are protocol-buffer records
+`sx` reads without any extra dependency, using the field numbers `agy` itself
+ships. Beside it are the conversation's artifacts folder (`brain/<id>/`), its
+title (`annotations/<id>.pbtxt`) and a presence lock (`presence/<id>.lock`).
+
+- **What is listed.** Every conversation with at least one step, under the
+  first folder of its workspace, titled as `agy` titles it. A subagent's
+  conversation belongs to the one that launched it and is not listed on its
+  own. A conversation without steps, which a CLI creates when it starts and
+  which `agy`'s own `/resume` does not show, is offered as an orphan instead.
+  Prompts, replies, thinking, tool calls with their output, and system and
+  error messages are shown. A kind of step `sx` does not render shows as a
+  labeled placeholder.
+- **Reading leaves nothing behind.** A conversation database is opened
+  read-only, and immutable when it has no write-ahead log in use, because a
+  read-only connection to a closed database would otherwise create `-wal` and
+  `-shm` files beside it.
+- **What is open.** `agy` holds a conversation's presence lock while a CLI has
+  it open, from before the first prompt. On macOS `sx` asks the kernel whether
+  it is held (`F_GETLK`) and never takes it. It also lists your processes whose
+  command line names Antigravity (the CLI, `agy acp`, the desktop app) and
+  what they have open: one with the conversation's database, its log, its lock
+  or its artifacts open counts as having it open. A held lock shows the
+  conversation as live. On other platforms `sx` cannot read the lock, so every
+  conversation counts as open.
+- **The IDE's conversations are not listed.** The CLI's index also lists the
+  conversations of the Antigravity IDE, which it can import, but the IDE stores
+  them encrypted. `sx harnesses` says how many there are, and `sx` never edits
+  their index rows.
+- **Moving a project is not supported.** The workspace is recorded inside each
+  step as well as in the index, and `sx` does not rewrite those records. A move
+  lists the project's Antigravity conversations as refused, and they keep
+  pointing at the old folder.
+
 ## Run it
 
 You need [`uv`](https://docs.astral.sh/uv/). sx runs on Python 3.15 or newer, and
@@ -315,7 +363,8 @@ sx update       # show (or, with --run, execute) the upgrade command
 | `q` | Quit |
 
 A session written within the last 90 seconds — or an Oh My Pi session whose
-lease is held or cannot be checked — is flagged `● LIVE`; deleting one requires
+lease is held or cannot be checked, or an Antigravity conversation a CLI has
+open — is flagged `● LIVE`; deleting one requires
 typing `DELETE` to confirm. Liveness is checked again when you confirm: a
 session that became live while the dialog was open is not deleted, and pressing
 `d` again asks for the phrase. Deleting every orphan, or one orphan that removes
@@ -359,6 +408,24 @@ check, which on Linux means every Oh My Pi session (see [Safety](#safety)), and
 for both harnesses a session whose project folder is a symbolic link. If a
 delete removes some paths but refuses others, the TUI names the paths that
 stayed.
+
+An Antigravity CLI conversation also takes what `agy`'s own delete removes: its
+database and write-ahead log, its artifacts folder, its title and its presence
+lock, and with them every subagent conversation it launched. Subagents go
+first, and the conversation that launched them last. The delete stops at the
+first database it cannot remove, so a conversation never outlives the subagents
+it lists. Then the shared files forget them: their rows in
+`conversation_summaries.db` (the summary, the search index that holds the
+conversation's text, and the parent link), in one transaction; their
+prompt-history rows; and their entries in the CLI's caches, written back the
+way `agy` writes them. A conversation forked from it is a separate conversation
+and stays, but loses whatever it still used from the original's artifacts
+folder, as with `agy`'s own delete; the preview says so. Refused: a
+conversation a CLI or another Antigravity process has open, or that `sx`
+cannot check; one holding Git worktrees, which only `agy`'s own delete
+(`/resume`, then `F4`) also removes from their repositories; and a database or
+index without the tables and columns `sx` checked against, or that records
+another conversation's id.
 
 Orphans are checked again at deletion, for every harness. Each one is
 fingerprinted when the orphan screen lists it, and anything that changed since,
@@ -405,9 +472,10 @@ which other Claude configs' sessions may share; Gemini's project directories
 and its registry and folder-trust entries; Pi's project folder, once nothing in
 it has been written for 24 hours (Pi's trust decision in its `trust.json` stays:
 `sx` does not edit Pi's configuration); Oh My Pi's project folder and memory
-folder. Right before removing any of it, `sx` counts the project's sessions
-again from a fresh scan of every harness, and Pi and Oh My Pi check their
-folders again. If a session has appeared, or the session's transcript was not
+folder; the Antigravity CLI's trusted-folder entry, the "last conversation
+here" pointer `agy -c` follows, and the folder's prompt-history rows. Right
+before removing any of it, `sx` counts the project's sessions again from a
+fresh scan of every harness, and Pi and Oh My Pi check their folders again. If a session has appeared, or the session's transcript was not
 deleted, the project state stays. A harness that cannot be checked counts as
 still using the project: the checkbox is not offered, and the state stays.
 
@@ -464,6 +532,7 @@ them needs is different:
 | Gemini CLI | Rewrites the `.project_root` marker and re-keys `~/.gemini/projects.json` |
 | opencode | Updates the session's `directory` and `path` columns, and its workspace |
 | Pi | Re-points the `cwd` in the session header and moves the transcript to the folder the new path encodes to (the whole folder, when nothing in it has to stay); forks that link to a moved transcript by path are re-pointed at its new location |
+| Antigravity CLI | Nothing: not supported. Each of the project's conversations is listed as refused and keeps pointing at the old folder |
 | Oh My Pi | The same, with the header changes Oh My Pi's own move makes: the old location is added to `previousSessionFiles`, and the new directory is dropped from `additionalDirectories` (the list goes once it is empty). A session's artifacts folder and backups move with it, or nothing of it moves; `sx` moves the backups on purpose, so Oh My Pi cannot restore the session in the old folder. Lock files stay where they are. The project's memory folder moves too, ahead of the sessions, unless another directory's sessions share it, some of the project's sessions stay behind, or it was written in the last 90 seconds. A folder holding backups, drafts or archives that no transcript in it accounts for moves session by session. A session whose lease Oh My Pi holds, or that `sx` cannot check, is refused |
 
 A few properties worth knowing:
@@ -563,6 +632,7 @@ flowchart TD
     JF --> CX["CodexAdapter"]
     JF --> GM["GeminiAdapter"]
     BASE --> OC["OpencodeAdapter\n(SQLite, row-level delete)"]
+    BASE --> AG["AntigravityCliAdapter\n(SQLite per conversation,\nprotobuf steps)"]
     BASE --> DORM["dormant adapters\n(Cline, Cursor, Crush, ...)"]
     REG --> DEL["DeleteService\n(guards + op-log)"]
     REG --> MOV["MoveService\n(re-point + relocate)"]
@@ -586,6 +656,10 @@ harnesses store one file per session; opencode keeps all sessions as rows in a
 shared SQLite database, so its adapter subclasses `HarnessAdapter` directly and
 deletes a session's rows (and its `session_diff` sidecar) without ever touching
 the database file or other sessions. Its shared `log/` files are left alone.
+The Antigravity CLI keeps a database per conversation whose steps are
+protocol-buffer records; `protowire` reads them without a schema, and `locks`
+holds the lock probe and the `ps`/`lsof` scan that Antigravity and Oh My Pi
+share.
 
 ## Development
 
@@ -659,7 +733,8 @@ the confirmation you see is the whole truth about what is about to happen:
   that do are the explicit, unticked last-session checkbox and the memory
   browser, and both are logged under their own op-log actions.
 - **Live sessions need a typed `DELETE`.** Liveness comes from the harness (file
-  mtime, the database column that tracks activity, or Oh My Pi's session lease)
+  mtime, the database column that tracks activity, Oh My Pi's session lease, or
+  Antigravity's presence lock)
   and is checked again when you confirm; when it can't be determined the
   session is treated as live rather than assumed safe.
 - **An open session is refused only when `sx` can see that it is open.** Oh My

@@ -35,6 +35,18 @@ from .base import JsonlFolderAdapter
 # Roles that denote an assistant turn in either Gemini record shape.
 _ASSISTANT_TYPES = ("gemini", "model", "assistant")
 
+#: Entries of ``~/.gemini`` that Google Antigravity owns: its CLI store, the
+#: IDE's stores and their backup, its browser profile, and the configuration
+#: the CLI and the IDE share. Refused by :meth:`GeminiAdapter.protected_paths`.
+_ANTIGRAVITY_ENTRIES = (
+    "antigravity",
+    "antigravity-backup",
+    "antigravity-browser-profile",
+    "antigravity-cli",
+    "antigravity-ide",
+    "config",
+)
+
 
 class GeminiAdapter(JsonlFolderAdapter):
     """Adapter for Gemini CLI chat sessions.
@@ -74,6 +86,26 @@ class GeminiAdapter(JsonlFolderAdapter):
             ``[~/.gemini]``.
         """
         return [home() / ".gemini"]
+
+    def protected_paths(self) -> list[Path]:
+        """Return the parts of ``~/.gemini`` that belong to Google Antigravity.
+
+        Antigravity keeps its CLI, IDE and shared configuration in the same
+        directory as Gemini CLI, so the root above covers them too. Nothing
+        Gemini does reaches them today; naming them here keeps it that way, as
+        a refusal rather than a convention.
+
+        Returns:
+            Every ``antigravity*`` entry and ``config`` in ``~/.gemini``, named
+            whether or not it exists yet.
+        """
+        base = home() / ".gemini"
+        named = {base / name for name in _ANTIGRAVITY_ENTRIES}
+        try:
+            named.update(entry for entry in base.iterdir() if entry.name.startswith("antigravity"))
+        except OSError:
+            pass
+        return sorted(named)
 
     def session_files(self) -> Iterator[Path]:
         """Yield Gemini chat session files.

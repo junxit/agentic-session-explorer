@@ -80,6 +80,7 @@ _HOME_MODULES = (
     "sx.adapters.opencode",
     "sx.adapters.pi",
     "sx.adapters.omp",
+    "sx.adapters.antigravity",
     "sx.adapters.dormant",
 )
 
@@ -145,6 +146,11 @@ def _synthetic_stores(home: Path) -> None:
 
     omp = home / ".omp" / "agent" / "sessions"
     (omp / "-empty").mkdir(parents=True)
+
+    from tests import agy_store
+
+    agy = agy_store.store_dir(home)
+    agy_store.conversation(agy, agy_store.EMPTY, [])
     _aged(*(p for p in home.rglob("*") if p.is_file()))
 
 
@@ -204,7 +210,7 @@ def test_orphan_paths_must_be_inside_declared_store_roots(sandboxed_registry):
                 if not is_within(path, roots):
                     offenders.append(f"{adapter.name}: {path}")
     assert offenders == [], f"orphans outside their own store roots: {offenders}"
-    assert {"claude", "gemini", "opencode", "pi", "omp"} <= reporting
+    assert {"claude", "gemini", "opencode", "pi", "omp", "antigravity"} <= reporting
 
 
 def test_delete_refuses_a_store_root_itself(tmp_path: Path):

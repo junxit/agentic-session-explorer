@@ -523,6 +523,45 @@ def _plan_left_behind(adapter, old: Path, new: Path) -> MovePlan | None:
     return plan if plan.relocations else None
 
 
+def _plan_unsupported(adapter, old: Path, new: Path, pool: list[Session] | None) -> MovePlan | None:
+    """Plan a move for a harness ``sx`` can browse but not move: refusals only.
+
+    Its sessions under ``old`` keep pointing there after the move, so each is
+    listed as refused, with why — the move reports them rather than leaving
+    them out — and nothing is asked of the adapter beyond finding them.
+
+    Args:
+        adapter: The harness's adapter, which lacks :attr:`Capability.MOVE`.
+        old: The project directory being moved away from.
+        new: The project directory being moved to.
+        pool: Already-discovered sessions to reuse, or ``None``.
+
+    Returns:
+        A plan holding only refusals, or ``None`` when the harness has no
+        session under ``old``.
+    """
+    try:
+        sessions = adapter.sessions_for_project(old, pool)
+    except Exception as exc:  # noqa: BLE001 - one harness must not break the rest
+        return MovePlan(
+            harness=adapter.name,
+            old=old,
+            new=new,
+            blocked={Path(f"<{adapter.name}>"): f"discovery failed: {exc!r}"},
+        )
+    if not sessions:
+        return None
+    reason = (
+        f"{adapter.display} sessions cannot be re-pointed by sx; this one stays recorded "
+        f"under {old} (refused)"
+    )
+    blocked = {
+        session.primary_path or Path(f"<{adapter.name}:{session.session_id}>"): reason
+        for session in sessions
+    }
+    return MovePlan(harness=adapter.name, old=old, new=new, sessions=sessions, blocked=blocked)
+
+
 class MoveService(_OperationService):
     """Coordinates re-pointing a project at a new directory across every harness.
 
@@ -562,6 +601,9 @@ class MoveService(_OperationService):
         running the same move again finishes it. So is project state a
         harness relocates on its own, such as Oh My Pi's memory, when no
         session of that harness is left to move (:func:`_plan_left_behind`).
+        A harness ``sx`` can browse but not move reports its sessions under
+        ``old`` as refused (:func:`_plan_unsupported`): they stay recorded
+        there, and the move must say so rather than leave them out.
 
         Args:
             old: The project directory being moved away from.
@@ -577,9 +619,15 @@ class MoveService(_OperationService):
         """
         plans: dict[str, MovePlan] = {}
         for name, adapter in self._adapters.items():
-            if Capability.MOVE not in adapter.capabilities or not adapter.available():
+            if not adapter.available():
                 continue
             pool = sessions_by_harness.get(name) if sessions_by_harness else None
+            if Capability.MOVE not in adapter.capabilities:
+                if Capability.BROWSE in adapter.capabilities:
+                    unsupported = _plan_unsupported(adapter, old, new, pool)
+                    if unsupported is not None:
+                        plans[name] = unsupported
+                continue
             try:
                 if pool is None:
                     pool = list(adapter.discover())
@@ -754,6 +802,10 @@ class MoveService(_OperationService):
                 adapter = self._adapters.get(name)
                 if adapter is None:
                     results[name] = _no_move_adapter(name, dry_run=dry_run)
+                    continue
+                if Capability.MOVE not in adapter.capabilities:
+                    # Planned by _plan_unsupported: nothing to run, only refusals.
+                    results[name] = MoveResult(dry_run=dry_run, skipped=dict(plan.blocked))
                     continue
                 progress = MoveResult(dry_run=dry_run)
                 plan.on_unit = functools.partial(self._unit_ran, name, plan, progress)

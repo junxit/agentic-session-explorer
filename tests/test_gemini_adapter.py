@@ -98,3 +98,24 @@ def test_gemini_group_key_missing_marker(tmp_path: Path):
         encoding="utf-8",
     )
     assert GeminiAdapter().group_key(chat, None) is None
+
+
+def test_antigravitys_folders_in_dot_gemini_are_protected(tmp_path, monkeypatch):
+    """Gemini's store root is all of ~/.gemini; Antigravity's entries in it are refused outright."""
+    from sx.adapters import gemini as gemini_module
+    from sx.adapters.gemini import GeminiAdapter
+
+    monkeypatch.setattr(gemini_module, "home", lambda: tmp_path)
+    base = tmp_path / ".gemini"
+    for name in ("antigravity-cli", "antigravity-nightly", "config", "tmp"):
+        (base / name).mkdir(parents=True)
+        (base / name / "f").write_text("x", encoding="utf-8")
+    adapter = GeminiAdapter()
+    protected = adapter.protected_paths()
+    assert base / "antigravity-cli" in protected and base / "antigravity-nightly" in protected
+    assert base / "antigravity-ide" in protected  # named even before it exists
+    result = adapter.delete_paths(
+        [base / "antigravity-cli" / "f", base / "config", base / "tmp" / "f"]
+    )
+    assert set(result.refused) == {base / "antigravity-cli" / "f", base / "config"}
+    assert result.removed == [base / "tmp" / "f"]

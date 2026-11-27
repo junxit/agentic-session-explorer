@@ -74,8 +74,6 @@ import json
 import os
 import re
 import stat
-import struct
-import subprocess
 import sys
 import time
 from collections.abc import Iterable, Iterator, Mapping
@@ -90,6 +88,7 @@ try:
 except ImportError:  # pragma: no cover - not POSIX: every lease is unknown
     fcntl = None
 
+from .. import locks
 from ..model import (
     DeleteResult,
     Message,
@@ -154,12 +153,12 @@ LEASE_DIR_ENV = "PI_TEST_SESSION_OWNERS_DIR"
 TEST_RUNTIME_ENV = "PI_TEST_RUNTIME"
 
 #: Results of :meth:`OmpAdapter.lease_state`.
-LEASE_FREE = "free"
-LEASE_HELD = "held"
-LEASE_UNKNOWN = "unknown"
+LEASE_FREE = locks.FREE
+LEASE_HELD = locks.HELD
+LEASE_UNKNOWN = locks.UNKNOWN
 
 #: What :func:`_probe_lease` and :func:`_flock_state` report for nothing there.
-_ABSENT = "absent"
+_ABSENT = locks.ABSENT
 
 #: How long the TUI's live badge may reuse a scan of the running Oh My Pi
 #: processes (:func:`_scan_processes`), counted from when the scan finished —
@@ -182,20 +181,10 @@ _SCAN_LIMIT: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "sx_omp_scan_limit", default=None
 )
 
-#: What ``lsof`` escapes in a name it prints: ``\n``, ``\t``, ``\r``, ``\b``,
-#: ``\f``, ``\\`` for a backslash, and ``\xNN`` for a byte it does not take for
-#: a printable character in its locale. (It prints other control characters
-#: as ``^`` and a letter, which cannot be told from those two characters.)
-_LSOF_ESCAPE_RE = re.compile(rb"\\(?:x([0-9a-fA-F]{2})|([ntrbf\\]))")
-_LSOF_ESCAPES = {b"n": b"\n", b"t": b"\t", b"r": b"\r", b"b": b"\b", b"f": b"\f", b"\\": b"\\"}
 
-#: The locale ``lsof`` runs in, so it prints a UTF-8 name as it is.
-_LSOF_LOCALE = "en_US.UTF-8"
-
-#: macOS's process and open-file listers, by absolute path: never looked up on
-#: ``PATH``.
-_PS = "/bin/ps"
-_LSOF = "/usr/sbin/lsof"
+#: macOS's process and open-file listers, by absolute path (:mod:`sx.locks`).
+_PS = locks.PS
+_LSOF = locks.LSOF
 
 #: A command line that may be omp's (see :func:`_runs_omp`).
 _OMP_COMMAND_RE = re.compile(r"(?:^|[\s/])omp(?:$|[\s._-])|oh-my-pi", re.IGNORECASE)
@@ -356,13 +345,9 @@ _BUN_CR_RE = re.compile(r"\r\n?")
 #: find the lease free, so every lease is unknown.
 _LEASES_ARE_FILES = not sys.platform.startswith("linux")
 
-#: ``struct flock`` as ``F_GETLK`` reads and writes it, on the platforms where
-#: its layout was checked: macOS's ``<sys/fcntl.h>`` declares ``off_t l_start``,
-#: ``off_t l_len``, ``pid_t l_pid``, ``short l_type``, ``short l_whence`` — 24
-#: bytes, verified on Darwin 27 (arm64) with ``offsetof`` and against a live
-#: lock. Elsewhere the layout differs (Linux and FreeBSD put other fields
-#: first, or add one), so ``None``: every lease is unknown.
-_FLOCK_LAYOUT = "@qqihh" if sys.platform == "darwin" else None
+#: ``struct flock`` as ``F_GETLK`` reads it, where its layout was checked
+#: (:data:`sx.locks.FLOCK_LAYOUT`); ``None`` elsewhere, and every lease is unknown.
+_FLOCK_LAYOUT = locks.FLOCK_LAYOUT
 
 #: File layouts :func:`_layout` reports.
 _SLOT = "slot"
@@ -1084,57 +1069,16 @@ def _clock(moment: datetime) -> str:
 
 
 def _flock_state(path: Path) -> str:
-    """Ask the kernel whether anyone holds a lock on ``path``, taking none.
-
-    The file is opened read-only, without following a link or creating
-    anything, and queried with ``F_GETLK`` for an exclusive lock over the whole
-    file: any lock another holder has — omp's ``flock``, a ``lockf``, shared or
-    exclusive — conflicts with that and is reported. Nothing is acquired, so a
-    holder trying to take the lock at the same moment always gets it.
+    """Ask whether anyone holds a lock on ``path``, taking none (:func:`sx.locks.flock_state`).
 
     Args:
         path: A lock file.
 
     Returns:
         :data:`LEASE_HELD`, :data:`LEASE_FREE`, :data:`_ABSENT` when nothing is
-        there, or :data:`LEASE_UNKNOWN` — for anything but a regular file, a
-        file replaced while it was opened, an error, an answer ``sx`` cannot
-        read, and a platform whose ``struct flock`` ``sx`` does not know.
+        there, or :data:`LEASE_UNKNOWN`.
     """
-    if fcntl is None or _FLOCK_LAYOUT is None:
-        return LEASE_UNKNOWN
-    try:
-        before = os.lstat(path)
-    except FileNotFoundError, NotADirectoryError:
-        return _ABSENT
-    except OSError, ValueError:
-        return LEASE_UNKNOWN
-    if not stat.S_ISREG(before.st_mode):
-        return LEASE_UNKNOWN
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
-    try:
-        fd = os.open(path, flags)
-    except FileNotFoundError, NotADirectoryError:
-        return _ABSENT
-    except OSError:
-        return LEASE_UNKNOWN
-    try:
-        opened = os.fstat(fd)
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-            return LEASE_UNKNOWN
-        query = struct.pack(_FLOCK_LAYOUT, 0, 0, 0, fcntl.F_WRLCK, os.SEEK_SET)
-        try:
-            answer = fcntl.fcntl(fd, fcntl.F_GETLK, query)
-        except OSError:
-            return LEASE_UNKNOWN
-    finally:
-        os.close(fd)
-    kind = struct.unpack(_FLOCK_LAYOUT, answer)[3]
-    if kind == fcntl.F_UNLCK:
-        return LEASE_FREE
-    if kind in (fcntl.F_RDLCK, fcntl.F_WRLCK):
-        return LEASE_HELD
-    return LEASE_UNKNOWN
+    return locks.flock_state(path, layout=_FLOCK_LAYOUT)
 
 
 def _probe_lease(directory: Path, session_id: str) -> str:
@@ -1242,25 +1186,8 @@ def _runs_omp(command: str) -> bool:
 
 
 def _parse_ps(output: bytes) -> list[tuple[int, int, str]]:
-    """Parse ``ps -o pid=,uid=,args=`` output.
-
-    Args:
-        output: What ``ps`` printed.
-
-    Returns:
-        ``(pid, uid, command line)`` for every line that names a process.
-    """
-    found: list[tuple[int, int, str]] = []
-    for line in output.decode("utf-8", errors="replace").splitlines():
-        parts = line.split(None, 2)
-        if len(parts) < 2:
-            continue
-        try:
-            pid, uid = int(parts[0]), int(parts[1])
-        except ValueError:
-            continue
-        found.append((pid, uid, parts[2] if len(parts) > 2 else ""))
-    return found
+    """Parse ``ps -o pid=,uid=,args=`` output (:func:`sx.locks.parse_ps`)."""
+    return locks.parse_ps(output)
 
 
 def _scan_timeout() -> float:
@@ -1270,93 +1197,32 @@ def _scan_timeout() -> float:
 
 
 def _list_processes() -> list[tuple[int, int, str]] | None:
-    """List every process with ``ps``, never running anything else.
+    """List every process with ``ps`` (:func:`sx.locks.list_processes`).
 
     Returns:
         ``(pid, uid, command line)`` per process; ``None`` when ``ps`` cannot
         run, fails or does not answer in time (:func:`_scan_timeout`).
     """
-    try:
-        done = subprocess.run(
-            [_PS, "-axwwo", "pid=,uid=,args="],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=_scan_timeout(),
-            check=False,
-        )
-    except OSError, subprocess.SubprocessError, ValueError:
-        return None
-    return _parse_ps(done.stdout) if done.returncode == 0 else None
-
-
-def _lsof_unescape(match: re.Match[bytes]) -> bytes:
-    """Return the byte one of ``lsof``'s escapes (:data:`_LSOF_ESCAPE_RE`) stands for."""
-    code, letter = match.groups()
-    return bytes([int(code, 16)]) if code is not None else _LSOF_ESCAPES[letter]
+    return locks.list_processes(timeout=_scan_timeout())
 
 
 def _parse_lsof(output: bytes) -> dict[int, list[str]]:
-    """Parse ``lsof -F n0`` output: NUL-terminated fields, one set per line.
-
-    ``lsof`` escapes some characters in the names it prints
-    (:data:`_LSOF_ESCAPE_RE`); each name is unescaped, so a lease directory
-    whose path holds a newline, a tab, a backslash or a character ``lsof``
-    printed as ``\\xNN`` is the directory on disk.
-
-    Args:
-        output: What ``lsof`` printed.
-
-    Returns:
-        Each process ``lsof`` listed -> the names of its open files.
-    """
-    files: dict[int, list[str]] = {}
-    current: list[str] | None = None
-    for field in output.split(b"\0"):
-        if field.startswith(b"\n"):
-            field = field[1:]
-        if not field:
-            continue
-        tag, value = field[:1], field[1:]
-        if tag == b"p":
-            try:
-                current = files.setdefault(int(value), [])
-            except ValueError:
-                current = None
-        elif tag == b"n" and current is not None:
-            current.append(os.fsdecode(_LSOF_ESCAPE_RE.sub(_lsof_unescape, value)))
-    return files
+    """Parse ``lsof -F n0`` output (:func:`sx.locks.parse_lsof`)."""
+    return locks.parse_lsof(output)
 
 
 def _list_open_files(pids: list[int]) -> dict[int, list[str]] | None:
-    """List what each process has open, with ``lsof``.
-
-    ``lsof`` runs with ``-b``, so it never waits on a file system that does not
-    answer (a hung network mount), and in a UTF-8 locale, so it prints a
-    non-ASCII name as it is rather than as escapes.
+    """List what each process has open, with ``lsof`` (:func:`sx.locks.list_open_files`).
 
     Args:
         pids: The processes.
 
     Returns:
-        Each process ``lsof`` could list -> the names of its open files; a
-        process missing from it could not be listed, or has exited. ``None``
-        when ``lsof`` cannot run or does not answer in time
+        Each process ``lsof`` could list -> the names of its open files;
+        ``None`` when ``lsof`` cannot run or does not answer in time
         (:func:`_scan_timeout`).
     """
-    if not pids:
-        return {}
-    try:
-        done = subprocess.run(
-            [_LSOF, "-nP", "-w", "-b", "-F", "n0", "-p", ",".join(str(pid) for pid in pids)],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=_scan_timeout(),
-            check=False,
-            env={**os.environ, "LC_ALL": _LSOF_LOCALE},
-        )
-    except OSError, subprocess.SubprocessError, ValueError:
-        return None
-    return _parse_lsof(done.stdout)  # exit status 1 only says some pid was not found
+    return locks.list_open_files(pids, timeout=_scan_timeout())
 
 
 def _alive(pid: int) -> bool:
