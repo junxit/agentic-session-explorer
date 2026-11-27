@@ -73,7 +73,7 @@ want.
 | Cline | 🧩 dormant | `~/.cline/data/workspaces/<id>/` |
 | Cursor | 🧩 dormant | `~/.cursor/` (SQLite) |
 | Crush | 🧩 dormant | SQLite |
-| Antigravity CLI | ✅ browse · 🔬 delete | `~/.gemini/antigravity-cli/conversations/<id>.db` (SQLite, one per conversation) |
+| Antigravity CLI | ✅ browse, delete | `~/.gemini/antigravity-cli/conversations/<id>.db` (SQLite, one per conversation) |
 | Antigravity IDE | 🔒 dormant | `~/.gemini/antigravity-ide/conversations/<id>.pb` (encrypted) |
 
 ✅ verified on a real machine · 🔬 fully supported, built from the harness's
@@ -89,8 +89,10 @@ checked against the harnesses' source only. Delete and move are built from
 source; they refuse any file that deviates from the format they expect.
 
 The Antigravity CLI was checked read-only against a real store (agy 1.5.18),
-with a conversation open in it. Discovery, the transcript, the open-conversation
-check and what a delete would remove matched; see
+with a conversation open in it: discovery, the transcript and the
+open-conversation check matched. Its delete was compared with `agy`'s own
+(`/resume`, then `F4`) on a throwaway conversation: replayed on a copy of the
+same files, `sx` removed exactly what `agy` did. See
 [Antigravity CLI](#antigravity-cli) for what delete does and refuses.
 
 ### Relocated Claude installs (`CLAUDE_CONFIG_DIR`)
@@ -225,8 +227,8 @@ title (`annotations/<id>.pbtxt`) and a presence lock (`presence/<id>.lock`).
 - **What is listed.** Every conversation with at least one step, under the
   first folder of its workspace, titled as `agy` titles it. A subagent's
   conversation belongs to the one that launched it and is not listed on its
-  own. A conversation without steps, which a CLI creates when it starts and
-  which `agy`'s own `/resume` does not show, is offered as an orphan instead.
+  own. A conversation without steps, which a CLI can leave behind and `agy`'s
+  own `/resume` does not show, is offered as an orphan instead.
   Prompts, replies, thinking, tool calls with their output, and system and
   error messages are shown. A kind of step `sx` does not render shows as a
   labeled placeholder.
@@ -235,7 +237,7 @@ title (`annotations/<id>.pbtxt`) and a presence lock (`presence/<id>.lock`).
   read-only connection to a closed database would otherwise create `-wal` and
   `-shm` files beside it.
 - **What is open.** `agy` holds a conversation's presence lock while a CLI has
-  it open, from before the first prompt. On macOS `sx` asks the kernel whether
+  it open. On macOS `sx` asks the kernel whether
   it is held (`F_GETLK`) and never takes it. It also lists your processes whose
   command line names Antigravity (the CLI, `agy acp`, the desktop app) and
   what they have open: one with the conversation's database, its log, its lock
@@ -409,26 +411,28 @@ for both harnesses a session whose project folder is a symbolic link. If a
 delete removes some paths but refuses others, the TUI names the paths that
 stayed.
 
-An Antigravity CLI conversation also takes what `agy`'s own delete removes: its
-database and write-ahead log, its artifacts folder, its title and its presence
-lock, and with them every subagent conversation `agy`'s index lists as its own.
-A conversation that one of its launch steps names but the index does not tie to
-it stays, and the preview says so: a fork starts as a copy of the original's
-steps, and the subagents those name are the original's. Subagents go first, and
-the conversation that launched them last. Each presence lock is checked again
-right before its database goes, and the delete stops at the first database it
-cannot remove, so a conversation never outlives the subagents it lists. Then the shared files forget them: their rows in
+An Antigravity CLI conversation takes what `agy`'s own delete (`/resume`, then
+`F4`) removes, compared on a real store: its database and write-ahead log, its
+artifacts folder and its title, and with them every subagent conversation
+`agy`'s index lists as its own. A conversation that one of its launch steps
+names but the index does not tie to it stays, and the preview says so: a fork
+starts as a copy of the original's steps, and the subagents those name are the
+original's. Subagents go first, and the conversation that launched them last.
+Each presence lock is checked again right before its database goes, and the
+delete stops at the first database it cannot remove, so a conversation never
+outlives the subagents it lists. Then the index forgets them: their rows in
 `conversation_summaries.db` (the summary, the search index that holds the
-conversation's text, and the parent link), in one transaction; their
-prompt-history rows; and their entries in the CLI's caches, written back the
-way `agy` writes them. A conversation forked from it is a separate conversation
-and stays, but loses whatever it still used from the original's artifacts
-folder, as with `agy`'s own delete; the preview says so. Refused: a
-conversation a CLI or another Antigravity process has open, or that `sx`
-cannot check; one holding Git worktrees, which only `agy`'s own delete
-(`/resume`, then `F4`) also removes from their repositories; and a database or
-index without the tables and columns `sx` checked against, or that records
-another conversation's id.
+conversation's text, and the parent link), in one transaction, and their
+entries in the CLI's summary cache. What `agy`'s delete leaves stays: the
+presence lock (offered as an orphan once nothing holds it), the prompt history,
+and the `cache/` files. A conversation forked from it is a separate
+conversation and stays, but loses whatever it still used from the original's
+artifacts folder, as with `agy`'s own delete; the preview says so. Refused: a
+conversation a CLI or another Antigravity process has open, or that `sx` cannot
+check; one holding Git worktrees, which only `agy`'s own delete (`/resume`,
+then `F4`) also removes from their repositories; and a database or index
+without the tables and columns `sx` checked against, or that records another
+conversation's id.
 
 Orphans are checked again at deletion, for every harness. Each one is
 fingerprinted when the orphan screen lists it, and anything that changed since,

@@ -113,21 +113,30 @@ def _session(adapter: AntigravityCliAdapter, cid: str):
 # --- what a delete removes ------------------------------------------------------------
 
 
-def test_a_delete_removes_the_conversation_and_forgets_it_everywhere(store, project):
-    """Files, then index rows, prompt history and cache entries; nothing of ``C`` or the IDE."""
+def test_a_delete_removes_what_agys_own_delete_removes(store, project):
+    """As F4 in agy's /resume does: files, index rows and the summary-cache entry; nothing else.
+
+    Compared on a real store (agy 1.5.18): its own delete leaves the presence
+    lock, the prompt history and the cache/ files, and so does sx.
+    """
     _populated(store, project)
+    untouched = {
+        name: (store / name).read_bytes()
+        for name in (
+            "history.jsonl",
+            "cache/conversation_metadata.json",
+            "cache/last_conversations.json",
+            "settings.json",
+        )
+    }
     adapter = AntigravityCliAdapter()
     db = store / "conversations" / f"{A}.db"
     result = adapter.delete(_session(adapter, A))
     assert not result.refused, result.skipped
-    for path in (
-        db,
-        store / "brain" / A,
-        store / "annotations" / f"{A}.pbtxt",
-        store / "presence" / f"{A}.lock",
-    ):
+    for path in (db, store / "brain" / A, store / "annotations" / f"{A}.pbtxt"):
         assert not path.exists(), path
         assert path in result.removed
+    assert (store / "presence" / f"{A}.lock").exists()
     assert (store / "conversations" / f"{C}.db").exists()
     index = store / "conversation_summaries.db"
     assert agy.rows_of(index, "SELECT conversation_id FROM conversation_summaries ORDER BY 1") == [
@@ -136,32 +145,29 @@ def test_a_delete_removes_the_conversation_and_forgets_it_everywhere(store, proj
     ]
     assert agy.rows_of(index, "SELECT conversation_id FROM conversations_fts") == [(C,)]
     assert agy.rows_of(index, "SELECT * FROM conversation_parents") == []
-    history = [json.loads(line) for line in (store / "history.jsonl").read_text().splitlines()]
-    assert [row["display"] for row in history] == ["/model", "other"]
-    metadata = (store / "cache" / "conversation_metadata.json").read_text(encoding="utf-8")
-    assert A not in metadata and metadata == agy.go_json(
-        {"conversations": {C: {"summary": {"ID": C, "Title": "Other"}, "is_internal": False}}},
-        newline=False,
-    )
-    assert json.loads((store / "cache" / "last_conversations.json").read_text()) == {
-        "/elsewhere": C
-    }
     assert (store / "jetbox_summaries_proto.pb").read_bytes() == agy.f(
         1, agy.f(1, C) + agy.f(2, b"\x0a\x01o")
     )
-    assert "removed 4 index row(s)" in result.note
-    assert "removed 1 prompt-history row(s)" in result.note
-    assert "removed 3 cache entries" in result.note
+    for name, before in untouched.items():
+        assert (store / name).read_bytes() == before, name
+    assert result.note == "removed 4 index row(s) · removed 1 summary-cache entry"
 
 
-def test_the_caches_keep_the_way_agy_writes_them(store, project):
-    """Two-space JSON, Go's HTML escapes, no trailing newline when the file had none."""
+def test_the_leftovers_cleanup_writes_json_the_way_agy_does(store, project):
+    """Two-space JSON, Go's HTML escapes, and a trailing newline only where the file had one."""
     _populated(store, project)
+    last = store / "cache" / "last_conversations.json"
+    last.write_text(
+        agy.go_json({str(project): A, "/work/R&D <x>": C}, newline=False)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e"),
+        encoding="utf-8",
+    )
     adapter = AntigravityCliAdapter()
-    adapter.delete(_session(adapter, C))
-    text = (store / "cache" / "conversation_metadata.json").read_text(encoding="utf-8")
-    assert '"Title": "Hello \\u003cA\\u0026B\\u003e"' in text
-    assert text.startswith('{\n  "conversations": {\n') and not text.endswith("\n")
+    adapter.delete_project_leftovers(adapter.project_leftovers(str(project)))
+    text = last.read_text(encoding="utf-8")
+    assert text == '{\n  "/work/R\\u0026D \\u003cx\\u003e": "' + C + '"\n}'
 
 
 def test_a_dry_run_changes_nothing_and_says_what_would_go(store, project):
@@ -171,8 +177,7 @@ def test_a_dry_run_changes_nothing_and_says_what_would_go(store, project):
     adapter = AntigravityCliAdapter()
     result = adapter.delete(_session(adapter, A), dry_run=True)
     assert store / "conversations" / f"{A}.db" in result.removed
-    assert "would remove 4 index row(s)" in result.note
-    assert "would remove 3 cache entries" in result.note
+    assert result.note == "would remove 4 index row(s) · would remove 1 summary-cache entry"
     after = {p: p.stat().st_mtime_ns for p in store.rglob("*") if p.is_file()}
     assert after == before
 

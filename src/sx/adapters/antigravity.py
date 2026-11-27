@@ -12,7 +12,8 @@ variable moves it). Each conversation is its own SQLite database:
   worktrees);
 * ``annotations/<id>.pbtxt`` — its title (``title:"…"``), archived flag;
 * ``presence/<id>.lock`` — an exclusive ``flock`` held while a CLI has the
-  conversation open, taken before the first prompt is sent.
+  conversation open. Created with the conversation, by its first prompt, and
+  left behind when the conversation is deleted.
 
 Shared stores index the conversations: ``conversation_summaries.db`` (a row per
 conversation with its title and ``file://`` workspace URIs, an FTS5 search
@@ -459,15 +460,18 @@ class AntigravityCliAdapter(HarnessAdapter):
         """Return a conversation's presence lock."""
         return self._store() / "presence" / f"{cid}.lock"
 
-    def _conversation_paths(self, cid: str) -> list[Path]:
+    def _conversation_paths(self, cid: str, *, lock: bool = True) -> list[Path]:
         """Return every path that belongs to one conversation, database first.
 
         Args:
             cid: A valid conversation id.
+            lock: Include the presence lock. A delete leaves it, as
+                Antigravity's own delete does: the file is part of how running
+                CLIs tell each other a conversation is open.
 
         Returns:
             The database and its WAL files, the artifacts folder, the
-            annotation and the presence lock — whichever exist.
+            annotation and (with ``lock``) the presence lock — whichever exist.
         """
         store = self._store()
         db = self._db(cid)
@@ -477,8 +481,9 @@ class AntigravityCliAdapter(HarnessAdapter):
             db.with_name(db.name + "-shm"),
             store / "brain" / cid,
             store / "annotations" / f"{cid}.pbtxt",
-            self._presence_path(cid),
         ]
+        if lock:
+            candidates.append(self._presence_path(cid))
         return [path for path in candidates if os.path.lexists(path)]
 
     def store_roots(self) -> list[Path]:
@@ -742,7 +747,7 @@ class AntigravityCliAdapter(HarnessAdapter):
             modified=datetime.fromtimestamp(newest) if newest else None,
             message_count=None,
             size_bytes=size,
-            paths=self._conversation_paths(cid) or [db],
+            paths=self._conversation_paths(cid, lock=False) or [db],
             is_orphan=bool(project) and project_state(project) == MISSING,
             extra={
                 "workspaces": list(summary.workspaces),
@@ -1165,14 +1170,16 @@ class AntigravityCliAdapter(HarnessAdapter):
     def delete(self, session: Session, *, dry_run: bool = False) -> DeleteResult:
         """Delete a conversation, its subagent conversations, and their index entries.
 
-        What goes is what Antigravity's own delete removes: for each
-        conversation, the database and its write-ahead log, the artifacts
-        folder, the annotation and the presence lock; then its rows in
-        ``conversation_summaries.db`` (summary, search index, parent link), its
-        prompt-history rows and its entries in the CLI's caches. Subagent
+        What goes is what Antigravity's own delete (``/resume``, then F4)
+        removes, as compared on a real store: for each conversation, the
+        database and its write-ahead log, the artifacts folder and the
+        annotation; then its rows in ``conversation_summaries.db`` (summary,
+        search index, parent link) and its entry in
+        ``jetbox_summaries_proto.pb``. What that delete leaves stays: the
+        presence lock, the prompt history, and the ``cache/`` files. Subagent
         conversations go first and the one that launched them last, and the
-        delete stops at the first file that will not go, so a conversation is
-        never left without the subagents it lists.
+        delete stops at the first database that will not go, so a conversation
+        is never left without the subagents it lists.
 
         Everything is checked again first (:meth:`destructive_refusal`).
         Conversations forked from this one keep their own files, but lose
@@ -1211,12 +1218,12 @@ class AntigravityCliAdapter(HarnessAdapter):
             """Record that this conversation's other files, and every later one's, stay."""
             rest = list(paths)
             for later in family[position + 1 :]:
-                rest.extend(self._conversation_paths(later))
+                rest.extend(self._conversation_paths(later, lock=False))
             for path in rest:
                 result.skipped.setdefault(path, why)
 
         for position, member in enumerate(family):
-            paths = self._conversation_paths(member)
+            paths = self._conversation_paths(member, lock=False)
             first = [p for p in paths if p == self._db(member)]
             # Asked again right before the database goes: a CLI that opened
             # the conversation since the checks above would go on writing to a
@@ -1277,12 +1284,12 @@ class AntigravityCliAdapter(HarnessAdapter):
         result: DeleteResult,
         index: _Index | None = None,
     ) -> list[str]:
-        """Remove ``ids`` from the shared index, the prompt history and the caches.
+        """Remove ``ids`` from the shared index and the CLI's summary cache.
 
-        An id whose index row another Antigravity app owns — an IDE
-        conversation the CLI imported keeps the IDE's row — keeps every index
-        row and cache entry of that app; the CLI's own prompt history still
-        forgets it.
+        That is what Antigravity's own delete forgets; its prompt history and
+        ``cache/`` files keep the conversation, and so they do here. An id
+        whose index row another Antigravity app owns — an IDE conversation the
+        CLI imported keeps the IDE's row — keeps every index row.
 
         Args:
             ids: Conversations whose files are gone (or would be, in a dry run).
@@ -1309,26 +1316,11 @@ class AntigravityCliAdapter(HarnessAdapter):
                 result.skipped[self._index_path()] = error
             elif rows:
                 notes.append(f"{verb} {rows} index row(s)")
-        wanted = set(ids)
-        history = self._history_path()
-        if history.is_file():
-            count, error = rewrite_jsonl(
-                history,
-                lambda obj: DROP if obj.get("conversationId") in wanted else None,
-                dry_run=dry_run,
-            )
-            if error is not None:
-                result.skipped[history] = error
-            elif count:
-                notes.append(f"{verb} {count} prompt-history row(s)")
-        entries = 0
-        for path, edit in self._cache_edits(wanted):
-            changed, error = edit(dry_run)
-            if error is not None:
-                result.skipped[path] = error
-            entries += changed
-        if entries:
-            notes.append(f"{verb} {entries} cache entr{'y' if entries == 1 else 'ies'}")
+        entries, error = self._edit_jetbox(set(ids), dry_run=dry_run)
+        if error is not None:
+            result.skipped[self._store() / "jetbox_summaries_proto.pb"] = error
+        elif entries:
+            notes.append(f"{verb} {entries} summary-cache entr{'y' if entries == 1 else 'ies'}")
         return notes
 
     def _drop_index_rows(self, ids: list[str], *, dry_run: bool) -> tuple[int, str | None]:
@@ -1392,46 +1384,6 @@ class AntigravityCliAdapter(HarnessAdapter):
             if con is not None:
                 con.close()
 
-    def _cache_edits(self, ids: set[str]) -> list[tuple[Path, object]]:
-        """Return the cache edits that forget ``ids``, as ``(path, edit)`` pairs.
-
-        Each edit takes ``dry_run`` and returns ``(entries changed, error)``.
-        """
-        cache = self._store() / "cache"
-        metadata = cache / "conversation_metadata.json"
-        last = cache / "last_conversations.json"
-
-        def owned(entry: object) -> bool:
-            summary = entry.get("summary") if isinstance(entry, dict) else None
-            app = summary.get("AppDataDir") if isinstance(summary, dict) else None
-            return app in (None, "", APP_DATA_DIR)
-
-        def drop_metadata(data: object) -> int:
-            conversations = data.get("conversations") if isinstance(data, dict) else None
-            if not isinstance(conversations, dict):
-                return 0
-            hits = [key for key, entry in conversations.items() if key in ids and owned(entry)]
-            for key in hits:
-                del conversations[key]
-            return len(hits)
-
-        def drop_last(data: object) -> int:
-            if not isinstance(data, dict):
-                return 0
-            hits = [key for key, value in data.items() if value in ids]
-            for key in hits:
-                del data[key]
-            return len(hits)
-
-        return [
-            (metadata, lambda dry_run: _edit_json(metadata, drop_metadata, dry_run=dry_run)),
-            (last, lambda dry_run: _edit_json(last, drop_last, dry_run=dry_run)),
-            (
-                self._store() / "jetbox_summaries_proto.pb",
-                lambda dry_run: self._edit_jetbox(ids, dry_run=dry_run),
-            ),
-        ]
-
     def _edit_jetbox(self, ids: set[str], *, dry_run: bool) -> tuple[int, str | None]:
         """Drop ``ids``' entries from ``jetbox_summaries_proto.pb``.
 
@@ -1480,8 +1432,8 @@ class AntigravityCliAdapter(HarnessAdapter):
     def find_orphans(self) -> list[Orphan]:
         """Find conversations without steps and files their conversation left behind.
 
-        * A conversation with no steps — created when a CLI started, never
-          sent a prompt — which Antigravity's ``/resume`` does not list.
+        * A conversation with no steps — one a CLI created but never recorded a
+          step in — which Antigravity's ``/resume`` does not list.
         * An empty database, or one without a conversation's tables, such as
           older CLIs re-created after a delete.
         * An annotation or presence lock whose conversation is gone.
