@@ -1,6 +1,77 @@
 Changelog
 =========
 
+0.9.0
+-----
+sx now supports Google's Antigravity CLI (agy): its conversations can be
+browsed, exported and deleted, and what they leave behind cleaned up, as for
+every other harness. Moving a project does not cover them yet, and a move now
+says so.
+
+New
+- Antigravity CLI support. sx reads ~/.gemini/antigravity-cli, where each
+  conversation is its own SQLite database and each step a protobuf record. It
+  decodes them with the field numbers agy 1.5.18 ships, and without a new
+  dependency. Conversations are grouped by workspace and titled as agy titles
+  them. Prompts, replies, thinking, tool calls with their output, and system
+  and error messages are shown. A subagent's conversation belongs to the one
+  that launched it and is not listed on its own.
+- A delete removes exactly what agy's own delete (/resume, then F4) removes,
+  as measured on a real store:
+  - the conversation's database and write-ahead log, its artifacts folder
+    and its title;
+  - then its rows in conversation_summaries.db and its summary-cache entry.
+  Subagent conversations go with it, first; forks stay. What agy's delete
+  leaves stays too: the presence lock, the prompt history and the cache/
+  files.
+- Orphans: conversations with no steps, empty or table-less databases, and
+  title and lock files whose conversation is gone.
+- Deleting a project's last session also offers the Antigravity CLI's
+  trusted-folder entry, its "last conversation here" pointer and the folder's
+  prompt-history rows, unticked as always.
+- The Antigravity IDE is listed as dormant: it stores its conversations
+  encrypted, so sx cannot read them. The CLI's index lists them too; sx never
+  lists or edits them.
+
+Safety
+- An Antigravity conversation that the CLI, agy acp, the desktop app or the
+  remote-control daemon has open is refused. sx reads the conversation's
+  presence lock with F_GETLK, which takes nothing, and lists what
+  Antigravity's processes have open. The lock is checked again right before
+  each database goes.
+- Also refused: conversations holding Git worktrees, which only agy's own
+  delete removes from their repositories, and databases or an index whose
+  layout sx did not check against.
+- Reading a conversation leaves nothing behind. A read-only connection to a
+  closed WAL database would create -wal and -shm files it cannot remove, so sx
+  opens such databases immutable.
+- Gemini's store root is all of ~/.gemini, which holds Antigravity's folders
+  and ~/.gemini/config. The Gemini adapter now refuses them outright.
+
+Changed
+- A project move lists the sessions of a harness sx can browse but not move
+  (today, the Antigravity CLI) as refused, instead of leaving them out.
+  `sx move` then exits non-zero, as for any refusal.
+- `sx harnesses` widens its name column for longer names, and says why a
+  dormant harness is dormant when sx knows.
+- Oh My Pi's lock probe and its ps/lsof scan moved to sx.locks, shared with
+  the Antigravity CLI. Oh My Pi's behavior is unchanged.
+
+Project
+- Dependencies (Dependabot): ruff 0.17.5, pytest 9.2.0, pytest-asyncio 1.5.0
+  and hatchling 1.33.0. pytest 9.2 needs pytest-asyncio's fixture loop scope
+  set explicitly, and it now is.
+- A TUI test that clicked a dialog's button before the dialog was laid out
+  could wait forever. It now waits for the dialog to settle (#20).
+- The README marks Pi browsing as verified on real data.
+- .claude/settings.local.json is in .gitignore, so a source build from a
+  working copy can never pick it up.
+
+Testing
+- 1,720 tests pass on macOS with every warning treated as an error. The new
+  ones build stores with agy's own table definitions. 23 deliberate
+  breakages of the new safety checks were each caught by a test.
+
 0.8.1
 -----
 Times recorded inside sessions are now shown in local time, two checks that
